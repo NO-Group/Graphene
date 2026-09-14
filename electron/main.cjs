@@ -15,6 +15,7 @@ const Y = require('yjs')
 const isDevelopment = !app.isPackaged
 let mainWindow = null
 let workspaceRoot = null
+let workspaceMounts = []
 let terminalSequence = 0
 const terminalSessions = new Map()
 const languageServers = new Map()
@@ -26,6 +27,8 @@ let collaborationServer = null
 let collaborationSocket = null
 let collaborationDocument = null
 let collaborationToken = ''
+let collaborationJoin = null
+let collaborationReconnectTimer = null
 const collaborationPeers = new Set()
 let extensionHost = null
 let extensionRequestSequence = 0
@@ -81,27 +84,44 @@ function languageFor(filePath) {
   return languages[extension] || 'plaintext'
 }
 
-function assertInsideWorkspace(absolutePath) {
-  const relation = path.relative(workspaceRoot, absolutePath)
+function assertInsideRoot(root, absolutePath) {
+  const relation = path.relative(root, absolutePath)
   if (relation.startsWith('..') || path.isAbsolute(relation)) throw new Error('The requested path is outside the workspace.')
 }
 
-function resolveWorkspacePath(relativePath) {
+function resolveWorkspaceTarget(relativePath) {
   if (!workspaceRoot) throw new Error('Open a workspace before accessing files.')
   if (typeof relativePath !== 'string' || !relativePath || relativePath.includes('\0')) throw new Error('Invalid file path.')
-  const absolutePath = path.resolve(workspaceRoot, relativePath)
-  assertInsideWorkspace(absolutePath)
+  const normalized = relativePath.replaceAll('\\', '/')
+  const mount = workspaceMounts.find((candidate) => normalized === candidate.prefix || normalized.startsWith(`${candidate.prefix}/`))
+  const root = mount?.path || workspaceRoot
+  const nestedPath = mount ? normalized.slice(mount.prefix.length).replace(/^\//, '') : normalized
+  const absolutePath = path.resolve(root, nestedPath)
+  assertInsideRoot(root, absolutePath)
+  return { absolutePath, root, mount }
+}
+
+function resolveWorkspacePath(relativePath) {
+  return resolveWorkspaceTarget(relativePath).absolutePath
+}
+
+async function resolveExistingWorkspacePath(relativePath) {
+  const { absolutePath, root } = resolveWorkspaceTarget(relativePath)
+  const stats = await fs.lstat(absolutePath)
+  if (stats.isSymbolicLink()) throw new Error('Accessing symbolic links is not allowed.')
+  const realPath = await fs.realpath(absolutePath)
+  assertInsideRoot(root, realPath)
   return absolutePath
 }
 
 async function resolveWritablePath(relativePath) {
-  const absolutePath = resolveWorkspacePath(relativePath)
+  const { absolutePath, root } = resolveWorkspaceTarget(relativePath)
   let existingParent = path.dirname(absolutePath)
 
   while (existingParent !== path.dirname(existingParent)) {
     try {
       const realParent = await fs.realpath(existingParent)
-      assertInsideWorkspace(realParent)
+      assertInsideRoot(root, realParent)
       break
     } catch (error) {
       if (error.code !== 'ENOENT') throw error
@@ -164,13 +184,23 @@ async function readWorkspace(root) {
 
 async function workspacePayload() {
   if (!workspaceRoot) return { canceled: true }
-  const files = await readWorkspace(workspaceRoot)
+  const primaryFiles = await readWorkspace(workspaceRoot)
+  const files = [...primaryFiles]
+  let truncated = primaryFiles.length >= MAX_WORKSPACE_FILES
+  for (const mount of workspaceMounts) {
+    const mountedFiles = await readWorkspace(mount.path)
+    for (const file of mountedFiles) {
+      if (files.length >= MAX_WORKSPACE_FILES) { truncated = true; break }
+      files.push({ ...file, path: `${mount.prefix}/${file.path}` })
+    }
+  }
   return {
     canceled: false,
     name: path.basename(workspaceRoot),
     path: workspaceRoot,
     files,
-    truncated: files.length >= MAX_WORKSPACE_FILES,
+    roots: [{ name: path.basename(workspaceRoot), path: workspaceRoot, prefix: '' }, ...workspaceMounts.map((mount) => ({ name: mount.name, path: mount.path, prefix: mount.prefix }))],
+    truncated,
   }
 }
 
@@ -178,7 +208,7 @@ async function startWorkspaceWatcher() {
   if (workspaceWatcher) await workspaceWatcher.close()
   workspaceWatcher = null
   if (!workspaceRoot || workspaceRoot.startsWith('ssh://')) return
-  workspaceWatcher = chokidar.watch(workspaceRoot, {
+  workspaceWatcher = chokidar.watch([workspaceRoot, ...workspaceMounts.map((mount) => mount.path)], {
     ignoreInitial: true,
     persistent: true,
     ignored: (candidate) => candidate.split(path.sep).some((part) => IGNORED_DIRECTORIES.has(part)),
@@ -188,10 +218,10 @@ async function startWorkspaceWatcher() {
     clearTimeout(watcherDebounce)
     watcherDebounce = setTimeout(() => {
       if (!mainWindow || mainWindow.isDestroyed()) return
-      mainWindow.webContents.send('workspace:file-event', {
-        event,
-        path: path.relative(workspaceRoot, changedPath).split(path.sep).join('/'),
-      })
+      const mount = workspaceMounts.find((candidate) => changedPath === candidate.path || changedPath.startsWith(`${candidate.path}${path.sep}`))
+      const root = mount?.path || workspaceRoot
+      const relative = path.relative(root, changedPath).split(path.sep).join('/')
+      mainWindow.webContents.send('workspace:file-event', { event, path: mount ? `${mount.prefix}/${relative}` : relative })
     }, 120)
   })
 }
@@ -207,36 +237,36 @@ async function searchWorkspace(query, limit = 300) {
   }
 
   try {
-    const output = await new Promise((resolve, reject) => {
-      execFile('rg', ['--json', '--line-number', '--column', '--fixed-strings', '--hidden', '--glob', '!.git/**', '--glob', '!node_modules/**', '--glob', '!dist/**', query, '.'], {
-        cwd: workspaceRoot,
-        timeout: 15000,
-        maxBuffer: 8 * 1024 * 1024,
-        windowsHide: true,
-      }, (error, stdout) => {
-        if (error && error.code !== 1) reject(error)
-        else resolve(stdout || '')
-      })
-    })
-    const results = []
-    for (const line of output.split(/\r?\n/)) {
-      if (!line || results.length >= safeLimit) continue
-      try {
-        const event = JSON.parse(line)
-        if (event.type !== 'match') continue
-        const data = event.data
-        results.push({
-          path: data.path.text.replace(/^\.\//, '').split(path.sep).join('/'),
-          line: data.line_number,
-          column: (data.submatches?.[0]?.start || 0) + 1,
-          preview: data.lines.text.trimEnd(),
+    const searchRoot = async (root, prefix = '') => {
+      const output = await new Promise((resolve, reject) => {
+        execFile('rg', ['--json', '--line-number', '--column', '--fixed-strings', '--hidden', '--glob', '!.git/**', '--glob', '!node_modules/**', '--glob', '!dist/**', query, '.'], {
+          cwd: root,
+          timeout: 15000,
+          maxBuffer: 8 * 1024 * 1024,
+          windowsHide: true,
+        }, (error, stdout) => {
+          if (error && error.code !== 1) reject(error)
+          else resolve(stdout || '')
         })
-      } catch { /* Ignore non-JSON rg output. */ }
+      })
+      const results = []
+      for (const line of output.split(/\r?\n/)) {
+        if (!line || results.length >= safeLimit) continue
+        try {
+          const event = JSON.parse(line)
+          if (event.type !== 'match') continue
+          const data = event.data
+          const relative = data.path.text.replace(/^\.\//, '').split(path.sep).join('/')
+          results.push({ path: prefix ? `${prefix}/${relative}` : relative, line: data.line_number, column: (data.submatches?.[0]?.start || 0) + 1, preview: data.lines.text.trimEnd() })
+        } catch { /* Ignore non-JSON rg output. */ }
+      }
+      return results
     }
-    return results
+    const batches = await Promise.all([searchRoot(workspaceRoot), ...workspaceMounts.map((mount) => searchRoot(mount.path, mount.prefix))])
+    return batches.flat().slice(0, safeLimit)
   } catch {
-    const files = await readWorkspace(workspaceRoot)
-    return files.flatMap((file) => file.content.split('\n').flatMap((line, index) => {
+    const payload = await workspacePayload()
+    return payload.files.flatMap((file) => file.content.split('\n').flatMap((line, index) => {
       const column = line.toLowerCase().indexOf(query.toLowerCase())
       return column < 0 ? [] : [{ path: file.path, line: index + 1, column: column + 1, preview: line.trim() }]
     })).slice(0, safeLimit)
@@ -323,7 +353,9 @@ async function connectSshWorkspace(configuration) {
     client.end()
     throw new Error('The requested SSH workspace folder does not exist or is not accessible.')
   }
+  resetWorkspaceLanguageServers()
   workspaceRoot = null
+  workspaceMounts = []
   remoteWorkspace = { client, sftp, host, port, username, root }
   if (workspaceWatcher) { await workspaceWatcher.close(); workspaceWatcher = null }
   client.once('close', () => {
@@ -364,6 +396,8 @@ function handleCollaborationMessage(raw, origin) {
 }
 
 async function hostCollaborationRoom(displayName) {
+  collaborationJoin = null
+  clearTimeout(collaborationReconnectTimer)
   collaborationSocket?.close()
   collaborationServer?.close()
   collaborationPeers.clear()
@@ -385,25 +419,79 @@ async function hostCollaborationRoom(displayName) {
   return { url, port, token: collaborationToken }
 }
 
-async function joinCollaborationRoom(url, displayName) {
-  if (typeof url !== 'string' || !/^wss?:\/\/[a-z0-9.:[\]-]+(?::\d+)?\/[A-Za-z0-9_-]{20,}$/i.test(url)) throw new Error('Enter a valid Tungsten collaboration URL.')
-  collaborationSocket?.close()
-  initializeCollaborationDocument()
-  collaborationSocket = new WebSocket(url)
-  const socket = collaborationSocket
+function scheduleCollaborationReconnect(url, displayName) {
+  if (!collaborationJoin) return
+  emitCollaboration('collaboration:event', { type: 'presence', name: displayName || 'You', state: 'reconnecting', self: true })
+  clearTimeout(collaborationReconnectTimer)
+  collaborationReconnectTimer = setTimeout(() => {
+    if (!collaborationJoin) return
+    connectCollaborationRoom(url, displayName, true).catch(() => scheduleCollaborationReconnect(url, displayName))
+  }, 1500)
+}
+
+async function connectCollaborationRoom(url, displayName, reconnecting = false) {
+  const socket = new WebSocket(url)
+  collaborationSocket = socket
   socket.on('message', (message) => handleCollaborationMessage(message, socket))
   await new Promise((resolve, reject) => {
     socket.once('open', resolve)
     socket.once('error', reject)
   })
-  collaborationSocket.once('close', () => emitCollaboration('collaboration:event', { type: 'presence', name: displayName || 'You', state: 'disconnected', self: true }))
+  if (collaborationSocket !== socket) return { connected: false }
+  emitCollaboration('collaboration:event', { type: 'presence', name: displayName || 'You', state: reconnecting ? 'reconnected' : 'joined', self: true })
   handleCollaborationMessage(JSON.stringify({ type: 'presence', name: displayName || 'Guest', state: 'joined' }), null)
+  socket.once('close', () => {
+    if (collaborationSocket !== socket || !collaborationJoin) return
+    scheduleCollaborationReconnect(url, displayName)
+  })
   return { connected: true }
+}
+
+async function joinCollaborationRoom(url, displayName) {
+  if (typeof url !== 'string' || !/^wss?:\/\/[a-z0-9.:[\]-]+(?::\d+)?\/[A-Za-z0-9_-]{20,}$/i.test(url)) throw new Error('Enter a valid Tungsten collaboration URL.')
+  collaborationJoin = null
+  clearTimeout(collaborationReconnectTimer)
+  collaborationSocket?.close()
+  initializeCollaborationDocument()
+  collaborationJoin = { url, displayName: displayName || 'Guest' }
+  return connectCollaborationRoom(url, displayName)
+}
+
+function resetWorkspaceLanguageServers() {
+  languageServers.forEach((server) => server.peer.dispose())
+  languageServers.clear()
+}
+
+async function addWorkspaceMount(rootPath) {
+  if (workspaceMounts.length >= 8) throw new Error('A Tungsten workspace supports up to eight additional roots.')
+  const resolved = await fs.realpath(rootPath)
+  if (resolved === workspaceRoot || workspaceMounts.some((mount) => mount.path === resolved)) return null
+  const baseName = path.basename(resolved).replace(/[^a-zA-Z0-9._-]/g, '-') || 'root'
+  let name = baseName
+  let sequence = 2
+  const nameUnavailable = async (candidate) => workspaceMounts.some((mount) => mount.name === candidate) || await fs.access(path.join(workspaceRoot, `@${candidate}`)).then(() => true).catch(() => false)
+  while (await nameUnavailable(name)) name = `${baseName}-${sequence++}`
+  const mount = { name, prefix: `@${name}`, path: resolved }
+  workspaceMounts.push(mount)
+  return mount
 }
 
 async function rememberWorkspace() {
   await fs.mkdir(app.getPath('userData'), { recursive: true })
-  await fs.writeFile(recentWorkspacePath(), JSON.stringify({ path: workspaceRoot }), 'utf8')
+  await fs.writeFile(recentWorkspacePath(), JSON.stringify({ path: workspaceRoot, mounts: workspaceMounts.map((mount) => mount.path) }), 'utf8')
+}
+
+async function runFileInput(command, args, input) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { cwd: workspaceRoot || app.getPath('home'), windowsHide: true, env: { ...process.env, FORCE_COLOR: '0', TERM: 'dumb' } })
+    let stdout = ''
+    let stderr = ''
+    child.stdout?.on('data', (chunk) => { stdout += chunk })
+    child.stderr?.on('data', (chunk) => { stderr += chunk })
+    child.once('error', reject)
+    child.once('exit', (code) => code === 0 ? resolve({ stdout, stderr }) : reject(Object.assign(new Error(stderr || `${command} exited with ${code}`), { stdout, stderr })))
+    child.stdin?.end(input)
+  })
 }
 
 async function runFile(command, args) {
@@ -565,7 +653,10 @@ async function startLanguageServer(language) {
             },
             workspace: { workspaceFolders: true },
           },
-          workspaceFolders: [{ uri: pathToFileURL(workspaceRoot).href, name: path.basename(workspaceRoot) }],
+          workspaceFolders: [
+            { uri: pathToFileURL(workspaceRoot).href, name: path.basename(workspaceRoot) },
+            ...workspaceMounts.map((mount) => ({ uri: pathToFileURL(mount.path).href, name: mount.name })),
+          ],
         })
         entry.capabilities = result?.capabilities || {}
         languageServers.set(language, entry)
@@ -590,13 +681,15 @@ async function startLanguageServer(language) {
 async function gitStatus() {
   if (!workspaceRoot) return { isRepository: false, branch: '', changes: [], error: 'Open a folder first.' }
   try {
-    const { stdout } = await runFile('git', ['status', '--porcelain=v1', '--branch'])
+    const { stdout } = await runFile('git', ['-c', 'core.quotepath=false', 'status', '--porcelain=v1', '--branch'])
     const lines = stdout.split(/\r?\n/).filter(Boolean)
     const heading = lines[0]?.startsWith('## ') ? lines.shift().slice(3) : 'HEAD'
     const branch = heading.split('...')[0].split(' ')[0]
     const changes = lines.map((line) => ({
       status: line.slice(0, 2).trim() || 'M',
-      path: line.slice(3).replace(/^"|"$/g, ''),
+      staged: line[0] !== ' ' && line[0] !== '?',
+      workingTree: line[1] !== ' ',
+      path: line.slice(3).split(' -> ').at(-1).replace(/^"|"$/g, ''),
     }))
     return { isRepository: true, branch, changes, error: '' }
   } catch (error) {
@@ -659,7 +752,7 @@ async function discoverTests() {
   const candidates = files.filter((file) => /(^|\/)(__tests__|tests?|specs?)(\/|\.)|\.(test|spec)\.[^.]+$/i.test(file.path) || /_test\.(go|py)$|tests?\.rs$/i.test(file.path))
   const tests = []
   for (const file of candidates.slice(0, 1000)) {
-    const content = await fs.readFile(safeWorkspacePath(file.path), 'utf8').catch(() => '')
+    const content = await fs.readFile(resolveWorkspacePath(file.path), 'utf8').catch(() => '')
     content.split('\n').forEach((line, index) => {
       const script = line.match(/\b(?:it|test)\s*\(\s*['"`]([^'"`]+)['"`]/)
       const python = line.match(/^\s*def\s+(test_[A-Za-z0-9_]+)/)
@@ -679,10 +772,27 @@ async function discoverTests() {
   return tests.slice(0, 5000)
 }
 
+async function runDiscoveredTest(testId) {
+  if (typeof testId !== 'string' || testId.length > 2000) throw new Error('Invalid test id.')
+  const test = (await discoverTests()).find((candidate) => candidate.id === testId)
+  if (!test) throw new Error('The selected test is no longer available.')
+  const startedAt = Date.now()
+  const result = await new Promise((resolve) => {
+    exec(test.command, { cwd: workspaceRoot, timeout: 120000, maxBuffer: 8 * 1024 * 1024, windowsHide: true, env: { ...process.env, FORCE_COLOR: '0', CI: '1' } }, (error, stdout, stderr) => {
+      const output = `${stdout || ''}${stderr || ''}`.trim()
+      const lines = output.split(/\r?\n/).filter(Boolean)
+      const failures = lines.filter((line) => /(?:\bfail(?:ed|ure)?\b|\berror\b|assertionerror|expected.+received)/i.test(line)).slice(0, 100)
+      const snapshots = lines.filter((line) => /snapshot/i.test(line)).slice(0, 100)
+      resolve({ id: test.id, status: error ? 'failed' : 'passed', code: typeof error?.code === 'number' ? error.code : error ? 1 : 0, durationMs: Date.now() - startedAt, stdout: stdout || '', stderr: stderr || '', output, failures, snapshots })
+    })
+  })
+  return { ...result, coverage: await readCoverage() }
+}
+
 async function readCoverage() {
   if (!workspaceRoot) return {}
   for (const candidate of ['coverage/lcov.info', 'lcov.info']) {
-    const content = await fs.readFile(safeWorkspacePath(candidate), 'utf8').catch(() => '')
+    const content = await fs.readFile(resolveWorkspacePath(candidate), 'utf8').catch(() => '')
     if (!content) continue
     const coverage = {}
     let source = ''
@@ -802,7 +912,9 @@ async function createProject(template, projectName) {
   await fs.writeFile(path.join(root, '.gitignore'), 'node_modules/\ndist/\ntarget/\n.venv/\n.env\n', 'utf8')
   if (remoteWorkspace?.client) remoteWorkspace.client.end()
   remoteWorkspace = null
+  resetWorkspaceLanguageServers()
   workspaceRoot = await fs.realpath(root)
+  workspaceMounts = []
   await rememberWorkspace()
   await startWorkspaceWatcher()
   return workspacePayload()
@@ -850,7 +962,30 @@ ipcMain.handle('desktop:open-folder', async () => {
   if (selection.canceled || !selection.filePaths[0]) return { canceled: true }
   if (remoteWorkspace?.client) remoteWorkspace.client.end()
   remoteWorkspace = null
+  resetWorkspaceLanguageServers()
   workspaceRoot = await fs.realpath(selection.filePaths[0])
+  workspaceMounts = []
+  await rememberWorkspace()
+  await startWorkspaceWatcher()
+  return workspacePayload()
+})
+
+ipcMain.handle('desktop:add-workspace-folder', async () => {
+  if (!workspaceRoot || remoteWorkspace) throw new Error('Open a local workspace before adding another root.')
+  const selection = await dialog.showOpenDialog(mainWindow, { title: 'Add folder to workspace', properties: ['openDirectory', 'createDirectory'] })
+  if (selection.canceled || !selection.filePaths[0]) return { canceled: true }
+  const mount = await addWorkspaceMount(selection.filePaths[0])
+  if (!mount) return workspacePayload()
+  for (const server of languageServers.values()) server.peer.notify('workspace/didChangeWorkspaceFolders', { event: { added: [{ uri: pathToFileURL(mount.path).href, name: mount.name }], removed: [] } })
+  await rememberWorkspace()
+  await startWorkspaceWatcher()
+  return workspacePayload()
+})
+ipcMain.handle('desktop:remove-workspace-folder', async (_event, prefix) => {
+  if (typeof prefix !== 'string' || !prefix.startsWith('@')) throw new Error('Invalid workspace root.')
+  const removed = workspaceMounts.find((mount) => mount.prefix === prefix)
+  workspaceMounts = workspaceMounts.filter((mount) => mount.prefix !== prefix)
+  if (removed) for (const server of languageServers.values()) server.peer.notify('workspace/didChangeWorkspaceFolders', { event: { added: [], removed: [{ uri: pathToFileURL(removed.path).href, name: removed.name }] } })
   await rememberWorkspace()
   await startWorkspaceWatcher()
   return workspacePayload()
@@ -861,11 +996,15 @@ ipcMain.handle('desktop:restore-workspace', async () => {
     const recent = JSON.parse(await fs.readFile(recentWorkspacePath(), 'utf8'))
     if (remoteWorkspace?.client) remoteWorkspace.client.end()
     remoteWorkspace = null
+    resetWorkspaceLanguageServers()
     workspaceRoot = await fs.realpath(recent.path)
+    workspaceMounts = []
+    for (const mountPath of Array.isArray(recent.mounts) ? recent.mounts.slice(0, 8) : []) await addWorkspaceMount(mountPath).catch(() => null)
     await startWorkspaceWatcher()
     return workspacePayload()
   } catch {
     workspaceRoot = null
+    workspaceMounts = []
     return { canceled: true }
   }
 })
@@ -905,10 +1044,8 @@ ipcMain.handle('desktop:rename-path', async (_event, sourcePath, destinationPath
     await sftpCall(remoteWorkspace.sftp, 'rename', safeRemotePath(sourcePath), safeRemotePath(destinationPath))
     return { ok: true }
   }
-  const source = resolveWorkspacePath(sourcePath)
+  const source = await resolveExistingWorkspacePath(sourcePath)
   const destination = await resolveWritablePath(destinationPath)
-  const sourceStats = await fs.lstat(source)
-  if (sourceStats.isSymbolicLink()) throw new Error('Renaming symbolic links is not allowed.')
   await fs.mkdir(path.dirname(destination), { recursive: true })
   await fs.rename(source, destination)
   return { ok: true }
@@ -919,7 +1056,7 @@ ipcMain.handle('desktop:delete-path', async (_event, relativePath) => {
     await sftpCall(remoteWorkspace.sftp, 'unlink', safeRemotePath(relativePath))
     return { ok: true }
   }
-  const absolutePath = resolveWorkspacePath(relativePath)
+  const absolutePath = await resolveExistingWorkspacePath(relativePath)
   const stats = await fs.lstat(absolutePath)
   if (!stats.isFile()) throw new Error('Only files can be deleted from the explorer.')
   await fs.unlink(absolutePath)
@@ -927,10 +1064,10 @@ ipcMain.handle('desktop:delete-path', async (_event, relativePath) => {
 })
 
 ipcMain.handle('desktop:reveal-path', async (_event, relativePath) => {
-  shell.showItemInFolder(resolveWorkspacePath(relativePath))
+  shell.showItemInFolder(await resolveExistingWorkspacePath(relativePath))
   return { ok: true }
 })
-ipcMain.handle('desktop:absolute-path', (_event, relativePath) => resolveWorkspacePath(relativePath))
+ipcMain.handle('desktop:absolute-path', (_event, relativePath) => resolveExistingWorkspacePath(relativePath))
 
 ipcMain.handle('desktop:git-status', () => gitStatus())
 
@@ -947,7 +1084,44 @@ ipcMain.handle('desktop:git-diff', async (_event, relativePath, staged = false) 
   if (staged) args.push('--cached')
   args.push('--', relativePath)
   const result = await runFile('git', args)
-  return { diff: result.stdout || 'No textual differences.' }
+  const diff = result.stdout || 'No textual differences.'
+  const lines = diff.split('\n')
+  const firstHunk = lines.findIndex((line) => line.startsWith('@@'))
+  const hunks = []
+  if (firstHunk >= 0) {
+    const header = lines.slice(0, firstHunk).join('\n')
+    let start = firstHunk
+    for (let index = firstHunk + 1; index <= lines.length; index += 1) {
+      if (index === lines.length || lines[index].startsWith('@@')) {
+        const body = lines.slice(start, index).join('\n')
+        hunks.push({ id: `${relativePath}:${hunks.length}`, header: lines[start], patch: `${header}\n${body}\n` })
+        start = index
+      }
+    }
+  }
+  return { diff, hunks }
+})
+
+ipcMain.handle('desktop:git-file-versions', async (_event, relativePath, staged = false) => {
+  const { mount } = resolveWorkspaceTarget(relativePath)
+  if (mount) throw new Error('Git comparison is currently scoped to the primary workspace root.')
+  const readGitVersion = async (spec) => runFile('git', ['show', spec]).then((result) => result.stdout).catch(() => '')
+  const before = await readGitVersion(staged ? `HEAD:${relativePath}` : `:${relativePath}`)
+  let after = ''
+  if (staged) after = await readGitVersion(`:${relativePath}`)
+  else {
+    try { after = await fs.readFile(await resolveExistingWorkspacePath(relativePath), 'utf8') }
+    catch (error) { if (error.code !== 'ENOENT') throw error }
+  }
+  return { before, after, path: relativePath, staged }
+})
+
+ipcMain.handle('desktop:git-stage-hunk', async (_event, patch, reverse = false) => {
+  if (typeof patch !== 'string' || patch.length > 1024 * 1024 || !patch.startsWith('diff --git ')) throw new Error('Invalid Git patch.')
+  const args = ['apply', '--cached', '--recount', '--unidiff-zero', '--whitespace=nowarn']
+  if (reverse) args.push('--reverse')
+  await runFileInput('git', args, patch)
+  return gitStatus()
 })
 
 ipcMain.handle('desktop:git-stage', async (_event, relativePath, staged) => {
@@ -1078,7 +1252,7 @@ ipcMain.handle('terminal:kill', (_event, id) => {
   return { ok: true }
 })
 
-ipcMain.handle('lsp:file-uri', (_event, relativePath) => pathToFileURL(resolveWorkspacePath(relativePath)).href)
+ipcMain.handle('lsp:file-uri', async (_event, relativePath) => pathToFileURL(await resolveExistingWorkspacePath(relativePath)).href)
 ipcMain.handle('lsp:start', (_event, language) => startLanguageServer(language))
 ipcMain.handle('lsp:request', async (_event, language, method, params) => {
   if (typeof method !== 'string' || !/^[\w$/]+$/.test(method)) throw new Error('Invalid language service method.')
@@ -1160,6 +1334,7 @@ ipcMain.handle('debug:stop', (_event, id) => {
 ipcMain.handle('workspace:search', (_event, query, limit) => searchWorkspace(query, limit))
 ipcMain.handle('project:detect', () => detectProject())
 ipcMain.handle('project:discover-tests', () => discoverTests())
+ipcMain.handle('project:run-test', (_event, testId) => runDiscoveredTest(testId))
 ipcMain.handle('project:coverage', () => readCoverage())
 ipcMain.handle('project:create', (_event, template, name) => createProject(template, name))
 
@@ -1222,6 +1397,8 @@ ipcMain.handle('collaboration:event', (_event, message) => {
   return { ok: true }
 })
 ipcMain.handle('collaboration:leave', () => {
+  collaborationJoin = null
+  clearTimeout(collaborationReconnectTimer)
   collaborationSocket?.close()
   collaborationServer?.close()
   collaborationSocket = null
@@ -1302,6 +1479,8 @@ app.whenReady().then(() => {
 app.on('window-all-closed', () => {
   if (workspaceWatcher) void workspaceWatcher.close()
   if (remoteWorkspace?.client) remoteWorkspace.client.end()
+  collaborationJoin = null
+  clearTimeout(collaborationReconnectTimer)
   collaborationSocket?.close()
   collaborationServer?.close()
   if (extensionHost?.connected) extensionHost.kill()

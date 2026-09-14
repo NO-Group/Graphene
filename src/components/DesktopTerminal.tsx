@@ -1,13 +1,16 @@
 import { useEffect, useRef, useState } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
+import { SearchAddon } from '@xterm/addon-search'
 import '@xterm/xterm/css/xterm.css'
 
 type CommandRequest = { id: number; command: string } | null
+type SearchRequest = { id: number; query: string } | null
 
-export default function DesktopTerminal({ sessionKey, command, profile }: { sessionKey: number; command: CommandRequest; profile?: { kind: 'wsl' | 'container'; id: string } }) {
+export default function DesktopTerminal({ sessionKey, command, profile, searchRequest }: { sessionKey: number; command: CommandRequest; profile?: { kind: 'wsl' | 'container'; id: string }; searchRequest?: SearchRequest }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const terminalRef = useRef<Terminal | null>(null)
+  const searchAddonRef = useRef<SearchAddon | null>(null)
   const sessionRef = useRef<string | null>(null)
   const [ready, setReady] = useState(false)
 
@@ -50,7 +53,10 @@ export default function DesktopTerminal({ sessionKey, command, profile }: { sess
       },
     })
     const fitAddon = new FitAddon()
+    const searchAddon = new SearchAddon()
     terminal.loadAddon(fitAddon)
+    terminal.loadAddon(searchAddon)
+    searchAddonRef.current = searchAddon
     terminal.open(containerRef.current)
     terminalRef.current = terminal
 
@@ -92,6 +98,7 @@ export default function DesktopTerminal({ sessionKey, command, profile }: { sess
       if (sessionRef.current) void api.killTerminal(sessionRef.current)
       terminal.dispose()
       terminalRef.current = null
+      searchAddonRef.current = null
       sessionRef.current = null
     }
   }, [profile, sessionKey])
@@ -101,6 +108,11 @@ export default function DesktopTerminal({ sessionKey, command, profile }: { sess
     void window.tungsten.writeTerminal(sessionRef.current, `${command.command}\r`)
     terminalRef.current?.focus()
   }, [command, ready])
+
+  useEffect(() => {
+    if (!searchRequest?.query) return
+    searchAddonRef.current?.findNext(searchRequest.query, { caseSensitive: false, incremental: false, decorations: { matchBackground: '#687c3b', activeMatchBackground: '#d2ff72', matchOverviewRuler: '#687c3b', activeMatchColorOverviewRuler: '#d2ff72' } })
+  }, [searchRequest])
 
   return <div className="desktop-terminal" ref={containerRef} onClick={() => terminalRef.current?.focus()} />
 }

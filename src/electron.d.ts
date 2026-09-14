@@ -5,13 +5,14 @@ type DesktopWorkspaceResult = {
   files?: import('./workspace').WorkspaceFile[]
   truncated?: boolean
   remote?: boolean
+  roots?: Array<{ name: string; path: string; prefix: string }>
 }
 
 type DesktopCommandResult = { code: number; stdout: string; stderr: string }
 type GitStatusResult = {
   isRepository: boolean
   branch: string
-  changes: Array<{ status: string; path: string }>
+  changes: Array<{ status: string; path: string; staged?: boolean; workingTree?: boolean }>
   error: string
 }
 type ProjectTask = { label: string; command: string; kind?: string }
@@ -37,6 +38,8 @@ interface Window {
     versions: Readonly<{ electron: string; chromium: string; node: string }>
 
     openFolder: () => Promise<DesktopWorkspaceResult>
+    addWorkspaceFolder: () => Promise<DesktopWorkspaceResult>
+    removeWorkspaceFolder: (prefix: string) => Promise<DesktopWorkspaceResult>
     restoreWorkspace: () => Promise<DesktopWorkspaceResult>
     refreshWorkspace: () => Promise<DesktopWorkspaceResult>
     writeFile: (path: string, content: string) => Promise<{ ok: true }>
@@ -54,7 +57,9 @@ interface Window {
 
     gitStatus: () => Promise<GitStatusResult>
     gitCommit: (message: string) => Promise<{ ok: true; output: string; status: GitStatusResult }>
-    gitDiff: (path: string, staged?: boolean) => Promise<{ diff: string }>
+    gitDiff: (path: string, staged?: boolean) => Promise<{ diff: string; hunks: Array<{ id: string; header: string; patch: string }> }>
+    gitFileVersions: (path: string, staged?: boolean) => Promise<{ before: string; after: string; path: string; staged: boolean }>
+    gitStageHunk: (patch: string, reverse?: boolean) => Promise<GitStatusResult>
     gitStage: (path: string, staged: boolean) => Promise<GitStatusResult>
     gitBranches: () => Promise<string[]>
     gitCheckout: (branch: string) => Promise<GitStatusResult>
@@ -90,6 +95,7 @@ interface Window {
 
     detectProject: () => Promise<ProjectInfo>
     discoverTests: () => Promise<Array<{ id: string; name: string; path: string; line: number; command: string }>>
+    runTest: (testId: string) => Promise<{ id: string; status: 'passed' | 'failed'; code: number; durationMs: number; stdout: string; stderr: string; output: string; failures: string[]; snapshots: string[]; coverage: Record<string, Array<{ line: number; hits: number }>> }>
     readCoverage: () => Promise<Record<string, Array<{ line: number; hits: number }>>>
     createProject: (template: string, name: string) => Promise<DesktopWorkspaceResult>
     scanExtensions: () => Promise<ExtensionManifest[]>
@@ -103,7 +109,7 @@ interface Window {
     sendCollaborationEvent: (message: { type: 'presence' | 'comment' | 'signal'; [key: string]: unknown }) => Promise<{ ok: true }>
     leaveCollaboration: () => Promise<{ ok: true }>
     onCollaborationDocument: (callback: (payload: { files: Record<string, string> }) => void) => Unsubscribe
-    onCollaborationEvent: (callback: (payload: { type: string; name?: string; state?: string; text?: string; path?: string; line?: number }) => void) => Unsubscribe
+    onCollaborationEvent: (callback: (payload: { type: string; name?: string; state?: string; text?: string; path?: string; line?: number; column?: number }) => void) => Unsubscribe
 
     saveRecovery: (snapshot: unknown) => Promise<{ ok: true }>
     loadRecovery: () => Promise<any>

@@ -1,5 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import Editor from '@monaco-editor/react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Archive,
   Bell,
@@ -31,14 +30,17 @@ import {
   Files,
   Folder,
   FolderOpen,
+  FolderPlus,
   GitBranch,
   GitCommitHorizontal,
+  GitCompareArrows,
   GitPullRequest,
   Hammer,
   Layers,
   ListChecks,
   Maximize2,
   Menu,
+  Minus,
   PackagePlus,
   PanelBottomClose,
   PanelBottomOpen,
@@ -65,11 +67,16 @@ import {
   Zap,
 } from 'lucide-react'
 import { defaultFiles, fileIconClass, fileName, languageForPath, supportedLanguages, symbolsFor, type WorkspaceFile } from './workspace'
-import DesktopTerminal from './components/DesktopTerminal'
+const DesktopTerminal = lazy(() => import('./components/DesktopTerminal'))
+const configuredEditor = () => import('./components/ConfiguredEditor')
+const Editor = lazy(configuredEditor)
+const DiffEditor = lazy(() => configuredEditor().then((module) => ({ default: module.DiffEditor })))
 import './styles.css'
 
 type Activity = 'explorer' | 'search' | 'source' | 'debug' | 'tests' | 'extensions'
 type PaletteMode = 'commands' | 'files'
+type TerminalProfile = { kind: 'wsl' | 'container'; id: string; label?: string }
+type TerminalTab = { id: number; label: string; generation: number; profile?: Omit<TerminalProfile, 'label'> }
 type CommandItem = {
   label: string
   detail: string
@@ -100,6 +107,8 @@ type TreeNode = {
 
 const WORKSPACE_KEY = 'tungsten.workspace.v1'
 const SETTINGS_KEY = 'tungsten.settings.v1'
+const TERMINAL_LAYOUT_KEY = 'tungsten.terminals.v2'
+const WORKBENCH_LAYOUT_KEY = 'tungsten.workbench.v2'
 const PREVIEW_PATH = '$preview'
 const lspLanguages = new Set(['javascript', 'typescript', 'python', 'rust', 'go', 'c', 'cpp', 'java', 'csharp', 'ruby', 'php', 'kotlin', 'lua'])
 const openedLspDocuments = new Set<string>()
@@ -298,6 +307,20 @@ function loadSettings() {
   }
 }
 
+function loadTerminalLayout(): { tabs: TerminalTab[]; activeId: number; split: boolean } {
+  try {
+    const stored = JSON.parse(localStorage.getItem(TERMINAL_LAYOUT_KEY) || '{}')
+    const tabs = Array.isArray(stored.tabs) ? stored.tabs.filter((tab: TerminalTab) => Number.isInteger(tab.id) && typeof tab.label === 'string').slice(0, 12) : []
+    if (tabs.length) return { tabs: tabs.map((tab: TerminalTab) => ({ ...tab, generation: 0 })), activeId: tabs.some((tab: TerminalTab) => tab.id === stored.activeId) ? stored.activeId : tabs[0].id, split: Boolean(stored.split) }
+  } catch { /* Use the default terminal layout. */ }
+  return { tabs: [{ id: 1, label: 'shell 1', generation: 0 }], activeId: 1, split: false }
+}
+
+function loadWorkbenchLayout() {
+  try { return JSON.parse(localStorage.getItem(WORKBENCH_LAYOUT_KEY) || '{}') as { sidebarWidth?: number; panelHeight?: number; sidebarVisible?: boolean; panelOpen?: boolean } }
+  catch { return {} }
+}
+
 function buildTree(files: WorkspaceFile[]): TreeNode[] {
   const root: TreeNode[] = []
 
@@ -455,16 +478,19 @@ const activityItems = [
 ]
 
 export default function App() {
+  const [initialTerminalLayout] = useState(loadTerminalLayout)
+  const [initialWorkbenchLayout] = useState(loadWorkbenchLayout)
   const [files, setFiles] = useState<WorkspaceFile[]>(loadFiles)
   const [workspaceName, setWorkspaceName] = useState('forge')
   const [workspaceRoot, setWorkspaceRoot] = useState('')
+  const [workspaceRoots, setWorkspaceRoots] = useState<Array<{ name: string; path: string; prefix: string }>>([])
   const [openTabs, setOpenTabs] = useState(['README.md', 'index.html', 'src/main.js'])
   const [activePath, setActivePath] = useState('src/main.js')
   const [activity, setActivity] = useState<Activity>('explorer')
-  const [sidebarVisible, setSidebarVisible] = useState(true)
-  const [sidebarWidth, setSidebarWidth] = useState(248)
-  const [panelOpen, setPanelOpen] = useState(true)
-  const [panelHeight, setPanelHeight] = useState(225)
+  const [sidebarVisible, setSidebarVisible] = useState(initialWorkbenchLayout.sidebarVisible ?? true)
+  const [sidebarWidth, setSidebarWidth] = useState(initialWorkbenchLayout.sidebarWidth ?? 248)
+  const [panelOpen, setPanelOpen] = useState(initialWorkbenchLayout.panelOpen ?? true)
+  const [panelHeight, setPanelHeight] = useState(initialWorkbenchLayout.panelHeight ?? 225)
   const [panelTab, setPanelTab] = useState('TERMINAL')
   const [dirty, setDirty] = useState<Set<string>>(new Set())
   const [cursor, setCursor] = useState({ line: 1, column: 1 })
@@ -485,17 +511,24 @@ export default function App() {
   const [gitInfo, setGitInfo] = useState<GitStatusResult>({ isRepository: false, branch: 'main', changes: [], error: '' })
   const [gitBranches, setGitBranches] = useState<string[]>([])
   const [gitView, setGitView] = useState<'changes' | 'history' | 'github'>('changes')
+  const [gitComparison, setGitComparison] = useState<{ path: string; virtualPath: string; before: string; after: string; staged: boolean; hunks: Array<{ id: string; header: string; patch: string }> } | null>(null)
   const [gitHistory, setGitHistory] = useState<Array<{ hash: string; shortHash: string; author: string; date: string; subject: string; refs: string }>>([])
   const [gitStashes, setGitStashes] = useState<Array<{ ref: string; hash: string; subject: string }>>([])
   const [githubItems, setGithubItems] = useState<{ pullRequests: Array<{ number: number; title: string; state: string; url: string }>; issues: Array<{ number: number; title: string; state: string; url: string }> }>({ pullRequests: [], issues: [] })
   const [projectInfo, setProjectInfo] = useState<ProjectInfo>({ tasks: [{ label: 'npm: dev', command: 'npm run dev' }, { label: 'npm: build', command: 'npm run build' }], tests: [], frameworks: ['Vite'] })
   const [discoveredTests, setDiscoveredTests] = useState<Array<{ id: string; name: string; path: string; line: number; command: string }>>([])
+  const [testResults, setTestResults] = useState<Record<string, { status: 'running' | 'passed' | 'failed'; durationMs?: number; output?: string; failures?: string[]; snapshots?: string[] }>>({})
+  const [activeTestResult, setActiveTestResult] = useState<string | null>(null)
   const [coverage, setCoverage] = useState<Record<string, Array<{ line: number; hits: number }>>>({})
   const [extensions, setExtensions] = useState<ExtensionManifest[]>([])
-  const [terminalTabs, setTerminalTabs] = useState<Array<{ id: number; label: string; generation: number; profile?: { kind: 'wsl' | 'container'; id: string } }>>([{ id: 1, label: 'shell 1', generation: 0 }])
-  const [activeTerminalId, setActiveTerminalId] = useState(1)
-  const [terminalSplit, setTerminalSplit] = useState(false)
-  const [terminalCommand, setTerminalCommand] = useState<{ id: number; command: string } | null>(null)
+  const [terminalTabs, setTerminalTabs] = useState<TerminalTab[]>(initialTerminalLayout.tabs)
+  const nextTerminalIdRef = useRef(Math.max(0, ...initialTerminalLayout.tabs.map((terminal) => terminal.id)) + 1)
+  const [activeTerminalId, setActiveTerminalId] = useState(initialTerminalLayout.activeId)
+  const [terminalSplit, setTerminalSplit] = useState(initialTerminalLayout.split)
+  const [terminalSearchOpen, setTerminalSearchOpen] = useState(false)
+  const [terminalSearchQuery, setTerminalSearchQuery] = useState('')
+  const [terminalSearchRequest, setTerminalSearchRequest] = useState<{ id: number; query: string } | null>(null)
+  const [terminalCommand, setTerminalCommand] = useState<{ id: number; command: string; terminalId?: number } | null>(null)
   const [projectModal, setProjectModal] = useState(false)
   const [remoteModal, setRemoteModal] = useState(false)
   const [remoteConnected, setRemoteConnected] = useState(false)
@@ -506,6 +539,7 @@ export default function App() {
   const [collaborationName, setCollaborationName] = useState('Developer')
   const [collaborationActive, setCollaborationActive] = useState(false)
   const [participants, setParticipants] = useState<string[]>([])
+  const [collaboratorCursors, setCollaboratorCursors] = useState<Record<string, { path: string; line: number; column: number }>>({})
   const [comments, setComments] = useState<Array<{ name: string; text: string; path?: string; line?: number }>>([])
   const [commentInput, setCommentInput] = useState('')
   const [projectTemplate, setProjectTemplate] = useState('web')
@@ -526,7 +560,7 @@ export default function App() {
   const [toast, setToast] = useState('')
   const [menuOpen, setMenuOpen] = useState<string | null>(null)
   const [terminalLines, setTerminalLines] = useState<Array<{ text: string; kind?: string }>>([
-    { text: `Tungsten Shell 2.0.0  ·  ${window.tungsten ? 'desktop process runner' : 'web sandbox'}`, kind: 'muted' },
+    { text: `Tungsten Shell 2.1.0  ·  ${window.tungsten ? 'desktop process runner' : 'web sandbox'}`, kind: 'muted' },
     { text: `${supportedLanguages.length} language grammars loaded. Type “help” for available commands.`, kind: 'success' },
   ])
   const [terminalInput, setTerminalInput] = useState('')
@@ -592,7 +626,7 @@ export default function App() {
     setActivePath(path)
   }, [])
 
-  const applyDesktopWorkspace = useCallback((result: DesktopWorkspaceResult, restored = false) => {
+  const applyDesktopWorkspace = useCallback((result: DesktopWorkspaceResult, restored = false, preserveTabs = false) => {
     if (result.canceled || !result.files) return
     const preferred = result.files.find((file) => file.path.toLowerCase() === 'readme.md')
       || result.files.find((file) => file.path === 'package.json')
@@ -600,9 +634,12 @@ export default function App() {
     setFiles(result.files)
     setWorkspaceName(result.name || 'workspace')
     setWorkspaceRoot(result.path || '')
+    setWorkspaceRoots(result.roots || (result.path ? [{ name: result.name || 'workspace', path: result.path, prefix: '' }] : []))
     setRemoteConnected(Boolean(result.remote))
-    setOpenTabs(preferred ? [preferred.path] : [])
-    setActivePath(preferred?.path || '')
+    if (!preserveTabs) {
+      setOpenTabs(preferred ? [preferred.path] : [])
+      setActivePath(preferred?.path || '')
+    }
     setDirty(new Set())
     window.tungsten?.gitStatus().then(setGitInfo).catch(() => undefined)
     window.tungsten?.gitBranches().then(setGitBranches).catch(() => setGitBranches([]))
@@ -639,6 +676,20 @@ export default function App() {
       notify(`Could not open folder: ${(error as Error).message}`)
     }
   }, [applyDesktopWorkspace, notify])
+
+  const addWorkspaceFolder = async () => {
+    if (!window.tungsten || !workspaceRoot || remoteConnected) return notify('Additional roots are available for local desktop workspaces')
+    if (dirty.size) return notify('Save your changes before adding another workspace root')
+    try { applyDesktopWorkspace(await window.tungsten.addWorkspaceFolder(), false, true) }
+    catch (error) { notify(`Could not add workspace folder: ${(error as Error).message}`) }
+  }
+
+  const removeWorkspaceFolder = async (prefix: string) => {
+    if (!window.tungsten || !prefix) return
+    if (dirty.size) return notify('Save your changes before removing a workspace root')
+    try { applyDesktopWorkspace(await window.tungsten.removeWorkspaceFolder(prefix)) }
+    catch (error) { notify(`Could not remove workspace folder: ${(error as Error).message}`) }
+  }
 
   const closeTab = (path: string) => {
     const index = openTabs.indexOf(path)
@@ -869,9 +920,28 @@ export default function App() {
     setPanelOpen(true)
     setPanelTab('TERMINAL')
     if (window.tungsten && workspaceRoot) {
-      setTerminalCommand((current) => ({ id: (current?.id || 0) + 1, command }))
+      const terminalId = newTerminal(undefined, `task · ${command.split(/\s+/)[0]}`)
+      setTerminalCommand((current) => ({ id: (current?.id || 0) + 1, command, terminalId }))
     } else {
       runTerminalCommand(command)
+    }
+  }
+
+  const runStructuredTest = async (testId: string) => {
+    if (!window.tungsten) {
+      const test = discoveredTests.find((candidate) => candidate.id === testId)
+      if (test) runIntegratedCommand(test.command)
+      return
+    }
+    setActiveTestResult(testId)
+    setTestResults((current) => ({ ...current, [testId]: { status: 'running' } }))
+    try {
+      const result = await window.tungsten.runTest(testId)
+      setTestResults((current) => ({ ...current, [testId]: result }))
+      setCoverage(result.coverage)
+      notify(`Test ${result.status} in ${result.durationMs} ms`)
+    } catch (error) {
+      setTestResults((current) => ({ ...current, [testId]: { status: 'failed', output: (error as Error).message, failures: [(error as Error).message] } }))
     }
   }
 
@@ -1007,16 +1077,27 @@ export default function App() {
     }
   }
 
-  const openGitDiff = async (path: string) => {
+  const openGitDiff = async (path: string, staged = false) => {
     if (!window.tungsten) return
     try {
-      const { diff } = await window.tungsten.gitDiff(path)
-      const virtualPath = `.tungsten/diffs/${fileName(path)}.diff`
+      const [{ diff, hunks }, versions] = await Promise.all([window.tungsten.gitDiff(path, staged), window.tungsten.gitFileVersions(path, staged)])
+      const virtualPath = `.tungsten/diffs/${staged ? 'staged-' : ''}${fileName(path)}.diff`
+      setGitComparison({ ...versions, virtualPath, hunks })
       setFiles((current) => [...current.filter((file) => file.path !== virtualPath), { path: virtualPath, content: diff, language: 'diff' }])
       openFile(virtualPath)
     } catch (error) {
       notify(`Could not open diff: ${(error as Error).message}`)
     }
+  }
+
+  const stageGitHunk = async (patch: string) => {
+    if (!window.tungsten || !gitComparison) return
+    try {
+      const status = await window.tungsten.gitStageHunk(patch, gitComparison.staged)
+      setGitInfo(status)
+      notify(gitComparison.staged ? 'Hunk unstaged' : 'Hunk staged')
+      await openGitDiff(gitComparison.path, gitComparison.staged)
+    } catch (error) { notify(`Could not apply hunk: ${(error as Error).message}`) }
   }
 
   const openGitBlame = async () => {
@@ -1070,6 +1151,7 @@ export default function App() {
     { label: 'View: Toggle Side Preview', detail: sidePreview ? 'Close the side preview' : 'Preview beside the editor', icon: Columns2, action: () => setSidePreview((value) => !value) },
     { label: 'View: Toggle Primary Side Bar', detail: sidebarVisible ? 'Hide the explorer' : 'Show the explorer', icon: PanelLeftClose, keys: ['⌘', 'B'], action: () => setSidebarVisible((value) => !value) },
     { label: 'View: Toggle Panel', detail: panelOpen ? 'Hide the bottom panel' : 'Show the bottom panel', icon: PanelBottomOpen, keys: ['⌘', 'J'], action: () => setPanelOpen((value) => !value) },
+    { label: 'Workspace: Add Folder to Workspace', detail: `${workspaceRoots.length} roots currently open`, icon: FolderPlus, action: () => { void addWorkspaceFolder() } },
     { label: 'Workspace: Refresh From Disk', detail: 'Reload files changed by other programs', icon: RefreshCw, action: refreshWorkspace },
     { label: 'Preferences: Open Settings', detail: 'Editor and workspace preferences', icon: Settings, keys: ['⌘', ','], action: () => setSettingsOpen(true) },
     { label: 'Workspace: Reset Starter', detail: 'Restore all starter files', icon: RotateCcw, action: resetWorkspace },
@@ -1093,6 +1175,7 @@ export default function App() {
     window.tungsten.restoreWorkspace()
       .then((result) => applyDesktopWorkspace(result, true))
       .catch(() => undefined)
+    window.tungsten.remoteProfiles().then(setRemoteProfiles).catch(() => undefined)
   }, [applyDesktopWorkspace])
 
   useEffect(() => {
@@ -1141,7 +1224,13 @@ export default function App() {
     })
     const unsubscribeExtension = window.tungsten.onExtensionEvent((message) => { if (message.type === 'error') notify(`${message.extensionId}: ${message.message}`) })
     const unsubscribeCollaborationEvent = window.tungsten.onCollaborationEvent((message) => {
-      if (message.type === 'presence' && message.name) setParticipants((current) => message.state === 'disconnected' ? current.filter((name) => name !== message.name) : current.includes(message.name!) ? current : [...current, message.name!])
+      if (message.type === 'presence' && message.name) {
+        setParticipants((current) => message.state === 'disconnected' ? current.filter((name) => name !== message.name) : current.includes(message.name!) ? current : [...current, message.name!])
+        if (message.state === 'cursor' && message.name !== collaborationName && message.path && message.line && message.column) setCollaboratorCursors((current) => ({ ...current, [message.name!]: { path: message.path!, line: message.line!, column: message.column! } }))
+        if (message.state === 'reconnecting') notify('Collaboration connection lost; reconnecting…')
+        if (message.state === 'reconnected') notify('Collaboration reconnected')
+        if (message.state === 'disconnected') setCollaboratorCursors((current) => { const next = { ...current }; delete next[message.name!]; return next })
+      }
       if (message.type === 'comment' && message.text) setComments((current) => [...current, { name: message.name || 'Collaborator', text: message.text!, path: message.path, line: message.line }])
     })
     const unsubscribeLanguage = window.tungsten.onLanguageNotification(({ language, message }) => {
@@ -1209,7 +1298,7 @@ export default function App() {
       if (event === 'update-available') void window.tungsten?.downloadUpdate()
     })
     return () => { unsubscribeWorkspace(); unsubscribeRemote(); unsubscribeCollaborationDocument(); unsubscribeCollaborationEvent(); unsubscribeExtension(); unsubscribeLanguage(); unsubscribeStatus(); unsubscribeDebugMessage(); unsubscribeDebugOutput(); unsubscribeDebugExit(); unsubscribeUpdater() }
-  }, [breakpoints, debugFrames, notify, watches])
+  }, [breakpoints, collaborationName, debugFrames, notify, watches])
 
   useEffect(() => {
     if (!window.tungsten || !workspaceRoot || !dirty.size) return
@@ -1247,14 +1336,29 @@ export default function App() {
   }, [settings])
 
   useEffect(() => {
+    if (!collaborationActive || !activePath || activePath === PREVIEW_PATH) return
+    const timer = window.setTimeout(() => { void window.tungsten?.sendCollaborationEvent({ type: 'presence', state: 'cursor', name: collaborationName, path: activePath, line: cursor.line, column: cursor.column }) }, 90)
+    return () => window.clearTimeout(timer)
+  }, [activePath, collaborationActive, collaborationName, cursor.column, cursor.line])
+
+  useEffect(() => {
+    localStorage.setItem(TERMINAL_LAYOUT_KEY, JSON.stringify({ tabs: terminalTabs.map(({ id, label, profile }) => ({ id, label, profile, generation: 0 })), activeId: activeTerminalId, split: terminalSplit }))
+  }, [activeTerminalId, terminalSplit, terminalTabs])
+
+  useEffect(() => {
+    localStorage.setItem(WORKBENCH_LAYOUT_KEY, JSON.stringify({ sidebarVisible, sidebarWidth, panelOpen, panelHeight }))
+  }, [panelHeight, panelOpen, sidebarVisible, sidebarWidth])
+
+  useEffect(() => {
     if (!editorInstance || !activeFile || activeFile.language === 'diff') return
     const decorations = [
       ...breakpoints.filter((point) => point.path === activeFile.path).map((point) => ({ range: new monacoApi.Range(point.line, 1, point.line, 1), options: { isWholeLine: true, glyphMarginClassName: 'debug-breakpoint-glyph', glyphMarginHoverMessage: { value: point.condition ? `Conditional breakpoint: ${point.condition}` : 'Breakpoint' } } })),
       ...(coverage[activeFile.path] || []).map((entry) => ({ range: new monacoApi.Range(entry.line, 1, entry.line, 1), options: { isWholeLine: true, linesDecorationsClassName: entry.hits > 0 ? 'coverage-hit-line' : 'coverage-miss-line', overviewRuler: { color: entry.hits > 0 ? '#628844' : '#a34e49', position: 1 } } })),
+      ...Object.entries(collaboratorCursors).filter(([, point]) => point.path === activeFile.path).map(([name, point]) => ({ range: new monacoApi.Range(point.line, point.column, point.line, point.column), options: { beforeContentClassName: 'collaboration-cursor', hoverMessage: { value: `${name} is editing here` } } })),
     ]
     const collection = editorInstance.createDecorationsCollection(decorations)
     return () => collection.clear()
-  }, [activeFile, breakpoints, coverage, editorInstance])
+  }, [activeFile, breakpoints, collaboratorCursors, coverage, editorInstance])
 
   useEffect(() => {
     if (!settings.autosave || !dirty.size) return
@@ -1325,18 +1429,20 @@ export default function App() {
     window.addEventListener('mouseup', up)
   }
 
-  const newTerminal = (profile?: { kind: 'wsl' | 'container'; id: string; label?: string }) => {
-    const id = Math.max(0, ...terminalTabs.map((terminal) => terminal.id)) + 1
-    setTerminalTabs((tabs) => [...tabs, { id, label: profile?.label || `shell ${id}`, generation: 0, profile: profile ? { kind: profile.kind, id: profile.id } : undefined }])
+  const newTerminal = (profile?: TerminalProfile, label?: string) => {
+    const id = nextTerminalIdRef.current++
+    setTerminalTabs((tabs) => [...tabs, { id, label: label || profile?.label || `shell ${id}`, generation: 0, profile: profile ? { kind: profile.kind, id: profile.id } : undefined }])
     setActiveTerminalId(id)
     setPanelTab('TERMINAL')
     setPanelOpen(true)
+    return id
   }
 
   const closeTerminal = (id: number) => {
     if (terminalTabs.length === 1) {
-      setTerminalTabs([{ id: id + 1, label: 'shell 1', generation: 0 }])
-      setActiveTerminalId(id + 1)
+      const replacementId = nextTerminalIdRef.current++
+      setTerminalTabs([{ id: replacementId, label: 'shell 1', generation: 0 }])
+      setActiveTerminalId(replacementId)
       return
     }
     const remaining = terminalTabs.filter((terminal) => terminal.id !== id)
@@ -1360,8 +1466,9 @@ export default function App() {
       const secondary = terminalTabs.find((terminal) => terminal.id !== activeTerminalId)
       const visible = terminalTabs.filter((terminal) => terminal.id === activeTerminalId || (terminalSplit && terminal.id === secondary?.id))
       return <div className="terminal-workspace">
-        <div className="terminal-tab-strip">{terminalTabs.map((terminal) => <button key={terminal.id} className={terminal.id === activeTerminalId ? 'active' : ''} onClick={() => setActiveTerminalId(terminal.id)}><TerminalSquare size={11} /><span>{terminal.label}</span><X size={10} onClick={(event) => { event.stopPropagation(); closeTerminal(terminal.id) }} /></button>)}<button className="terminal-add" title="New terminal" onClick={() => newTerminal()}><Plus size={12} /></button></div>
-        <div className={`terminal-grid ${terminalSplit && visible.length > 1 ? 'split' : ''}`}>{visible.map((terminal) => <div key={`${terminal.id}-${terminal.generation}`} className="terminal-cell"><DesktopTerminal sessionKey={terminal.id * 1000 + terminal.generation} command={terminal.id === activeTerminalId ? terminalCommand : null} profile={terminal.profile} /></div>)}</div>
+        <div className="terminal-tab-strip">{terminalTabs.map((terminal) => <button key={terminal.id} className={terminal.id === activeTerminalId ? 'active' : ''} onClick={() => setActiveTerminalId(terminal.id)}><TerminalSquare size={11} /><span>{terminal.label}</span><X size={10} onClick={(event) => { event.stopPropagation(); closeTerminal(terminal.id) }} /></button>)}<button className="terminal-add" title="New local terminal" onClick={() => newTerminal()}><Plus size={12} /></button><select title="Terminal profile" defaultValue="" onChange={(event) => { const [kind, id] = event.target.value.split(':'); if (kind === 'wsl') newTerminal({ kind, id, label: `WSL · ${id}` }); if (kind === 'container') { const container = remoteProfiles.containers.find((item) => item.id === id); newTerminal({ kind, id, label: `Docker · ${container?.name || id}` }); } event.target.value = '' }}><option value="">Profiles…</option>{remoteProfiles.wsl.map((name) => <option key={`wsl:${name}`} value={`wsl:${name}`}>WSL · {name}</option>)}{remoteProfiles.containers.map((container) => <option key={`container:${container.id}`} value={`container:${container.id}`}>Docker · {container.name}</option>)}</select></div>
+        {terminalSearchOpen && <form className="terminal-search" onSubmit={(event) => { event.preventDefault(); if (terminalSearchQuery) setTerminalSearchRequest({ id: Date.now(), query: terminalSearchQuery }) }}><Search size={12} /><input autoFocus value={terminalSearchQuery} onChange={(event) => setTerminalSearchQuery(event.target.value)} placeholder="Find in terminal" /><button type="submit">Next</button><button type="button" onClick={() => setTerminalSearchOpen(false)}><X size={12} /></button></form>}
+        <div className={`terminal-grid ${terminalSplit && visible.length > 1 ? 'split' : ''}`}>{visible.map((terminal) => <div key={`${terminal.id}-${terminal.generation}`} className="terminal-cell"><Suspense fallback={<div className="terminal-loading">Starting PTY…</div>}><DesktopTerminal sessionKey={terminal.id * 1000 + terminal.generation} command={terminal.id === (terminalCommand?.terminalId || activeTerminalId) ? terminalCommand : null} profile={terminal.profile} searchRequest={terminal.id === activeTerminalId ? terminalSearchRequest : null} /></Suspense></div>)}</div>
       </div>
     }
     return (
@@ -1411,10 +1518,10 @@ export default function App() {
   }, [files, nativeSearchResults, searchQuery, workspaceRoot])
 
   const sourceChanges = useMemo(() => {
-    const changes = new Map<string, string>()
-    if (gitInfo.isRepository) gitInfo.changes.forEach((change) => changes.set(change.path, change.status))
-    dirty.forEach((path) => changes.set(path, changes.get(path) || 'M'))
-    return [...changes].map(([path, status]) => ({ path, status }))
+    const changes = new Map<string, { path: string; status: string; staged?: boolean; workingTree?: boolean }>()
+    if (gitInfo.isRepository) gitInfo.changes.forEach((change) => changes.set(change.path, change))
+    dirty.forEach((path) => changes.set(path, { ...(changes.get(path) || { path, status: 'M' }), workingTree: true }))
+    return [...changes.values()]
   }, [dirty, gitInfo])
 
   const sidebarContent = () => {
@@ -1451,10 +1558,10 @@ export default function App() {
           <div className="sidebar-empty"><GitCommitHorizontal size={25} /><span>{gitInfo.error || 'This folder is not a Git repository'}</span></div>
         ) : sourceChanges.length === 0 ? (
           <div className="sidebar-empty"><GitCommitHorizontal size={25} /><span>Working tree is clean</span></div>
-        ) : sourceChanges.map(({ path, status }) => (
+        ) : sourceChanges.map(({ path, status, staged, workingTree }) => (
           <div className="change-row" key={path}>
-            <button className="change-main" onClick={() => { if (window.tungsten) void openGitDiff(path); else if (files.some((file) => file.path === path)) openFile(path) }}><FileGlyph path={path} /><span>{fileName(path)}</span><small>{path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : ''}</small></button>
-            {window.tungsten && <button className="stage-button" title="Stage file" onClick={() => { void window.tungsten!.gitStage(path, true).then(setGitInfo).catch((error: Error) => notify(error.message)) }}><Plus size={12} /></button>}
+            <button className="change-main" onClick={() => { if (window.tungsten) void openGitDiff(path, Boolean(staged && !workingTree)); else if (files.some((file) => file.path === path)) openFile(path) }}><FileGlyph path={path} /><span>{fileName(path)}</span><small>{path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : ''}{staged ? ' · staged' : ''}</small></button>
+            {window.tungsten && <button className="stage-button" title={staged && !workingTree ? 'Unstage file' : 'Stage file'} onClick={() => { void window.tungsten!.gitStage(path, !(staged && !workingTree)).then(setGitInfo).catch((error: Error) => notify(error.message)) }}>{staged && !workingTree ? <Minus size={12} /> : <Plus size={12} />}</button>}
             <b>{status}</b>
           </div>
         ))}
@@ -1496,7 +1603,8 @@ export default function App() {
         <div className="section-heading"><ChevronDown size={13} /><span>TEST PROFILES</span><span className="count-pill">{projectInfo.tests.length}</span></div>
         <div className="task-list">{projectInfo.tests.length ? projectInfo.tests.map((task) => <button key={task.label} onClick={() => runIntegratedCommand(task.command)}><FlaskConical size={14} /><span><strong>{task.label}</strong><small>{task.command}</small></span><Play size={12} /></button>) : <div className="sidebar-empty compact"><FlaskConical size={22} /><span>No test runner detected</span></div>}</div>
         <div className="section-heading"><ChevronDown size={13} /><span>DISCOVERED TESTS</span><span className="count-pill">{discoveredTests.length}</span></div>
-        <div className="test-case-list">{discoveredTests.slice(0, 300).map((test) => <div key={test.id}><button title="Open test" onClick={() => { openFile(test.path); window.setTimeout(() => { editorInstance?.setPosition({ lineNumber: test.line, column: 1 }); editorInstance?.revealLineInCenter(test.line) }, 30) }}><CircleCheck size={11} /><span><strong>{test.name}</strong><small>{test.path}:{test.line}</small></span></button><button title="Run this test" onClick={() => runIntegratedCommand(test.command)}><Play size={11} /></button><button title="Debug this test" onClick={() => { runIntegratedCommand(test.command); notify('Test command started in a dedicated terminal; attach a launch configuration to debug') }}><BugPlay size={11} /></button></div>)}</div>
+        <div className="test-case-list">{discoveredTests.slice(0, 300).map((test) => { const result = testResults[test.id]; return <div key={test.id} className={result?.status || ''}><button title="Open test" onClick={() => { setActiveTestResult(test.id); openFile(test.path); window.setTimeout(() => { editorInstance?.setPosition({ lineNumber: test.line, column: 1 }); editorInstance?.revealLineInCenter(test.line) }, 30) }}>{result?.status === 'failed' ? <CircleAlert size={11} /> : result?.status === 'running' ? <RefreshCw size={11} className="spin" /> : <CircleCheck size={11} />}<span><strong>{test.name}</strong><small>{test.path}:{test.line}{result?.durationMs !== undefined ? ` · ${result.durationMs} ms` : ''}</small></span></button><button title="Run this test" onClick={() => { void runStructuredTest(test.id) }}><Play size={11} /></button><button title="Debug this test" onClick={() => { runIntegratedCommand(test.command); notify('Test command started in a dedicated terminal; attach a launch configuration to debug') }}><BugPlay size={11} /></button></div> })}</div>
+        {activeTestResult && testResults[activeTestResult] && <div className={`test-result-detail ${testResults[activeTestResult].status}`}><strong>{testResults[activeTestResult].status.toUpperCase()}</strong>{testResults[activeTestResult].failures?.map((line, index) => <code key={`failure-${index}`}>{line}</code>)}{testResults[activeTestResult].snapshots?.map((line, index) => <code key={`snapshot-${index}`}>Snapshot · {line}</code>)}{testResults[activeTestResult].output && <pre>{testResults[activeTestResult].output}</pre>}</div>}
         <div className="coverage-summary"><ShieldCheck size={13} /><span>{Object.keys(coverage).length ? `Coverage loaded for ${Object.keys(coverage).length} files` : 'Run coverage to enable editor overlays'}</span></div>
         <div className="section-heading"><ChevronDown size={13} /><span>PROJECT TASKS</span><span className="count-pill">{projectInfo.tasks.length}</span></div>
         <div className="task-list">{projectInfo.tasks.map((task) => <button key={`${task.label}-${task.command}`} onClick={() => runIntegratedCommand(task.command)}><ListChecks size={14} /><span><strong>{task.label}</strong><small>{task.command}</small></span><Play size={12} /></button>)}</div>
@@ -1520,7 +1628,8 @@ export default function App() {
     return (
       <>
         <div className="sidebar-title"><span>EXPLORER</span><Ellipsis size={16} /></div>
-        <div className="project-heading"><ChevronDown size={13} /><strong>{workspaceName.toUpperCase()}</strong><span>{externalChange && <i className="workspace-change-dot" title={`${externalChange} changed on disk`} />}</span><TipButton label="Open folder" onClick={openDesktopFolder}><FolderOpen size={14} /></TipButton><TipButton label="Refresh workspace" onClick={() => { setExternalChange(null); void refreshWorkspace() }}><RefreshCw size={13} /></TipButton><TipButton label="New file" onClick={openNewFileDialog}><File size={14} /><Plus size={8} className="mini-plus" /></TipButton></div>
+        <div className="project-heading"><ChevronDown size={13} /><strong>{workspaceName.toUpperCase()}</strong><span>{externalChange && <i className="workspace-change-dot" title={`${externalChange} changed on disk`} />}</span><TipButton label="Open folder" onClick={openDesktopFolder}><FolderOpen size={14} /></TipButton><TipButton label="Add workspace root" onClick={() => { void addWorkspaceFolder() }}><FolderPlus size={14} /></TipButton><TipButton label="Refresh workspace" onClick={() => { setExternalChange(null); void refreshWorkspace() }}><RefreshCw size={13} /></TipButton><TipButton label="New file" onClick={openNewFileDialog}><File size={14} /><Plus size={8} className="mini-plus" /></TipButton></div>
+        {workspaceRoots.length > 1 && <div className="workspace-roots">{workspaceRoots.map((root) => <div key={root.path}><span>{root.prefix || '@primary'} · {root.name}</span>{root.prefix && <button title="Remove workspace root" onClick={() => { void removeWorkspaceFolder(root.prefix) }}><X size={10} /></button>}</div>)}</div>}
         <ExplorerTree files={files} activePath={activePath} openFile={openFile} dirty={dirty} onFileContext={(event, path) => { event.preventDefault(); setContextMenu({ x: event.clientX, y: event.clientY, path }) }} />
         <div className="outline-section">
           <div className="section-heading"><ChevronDown size={13} /><span>OUTLINE</span><span /><Ellipsis size={14} /></div>
@@ -1653,7 +1762,13 @@ export default function App() {
 
           <div className="editor-and-panel">
             <div className={`editor-area ${sidePreview && activeFile && activePath !== PREVIEW_PATH ? 'with-side-preview' : ''}`}>
-              {activePath === PREVIEW_PATH ? <Preview html={buildPreview()} onReload={() => notify('Preview refreshed')} /> : activeFile ? (
+              <Suspense fallback={<div className="editor-loading"><div className="loading-mark"><Hammer size={24} /></div><span>Heating editor core…</span></div>}>
+              {activePath === PREVIEW_PATH ? <Preview html={buildPreview()} onReload={() => notify('Preview refreshed')} /> : gitComparison && activePath === gitComparison.virtualPath ? (
+                <div className="git-compare-editor">
+                  <div className="git-compare-toolbar"><span><GitCompareArrows size={13} /> {gitComparison.path}</span><strong>{gitComparison.staged ? 'INDEX ↔ HEAD' : 'WORKTREE ↔ INDEX'}</strong><div>{gitComparison.hunks.map((hunk, index) => <button key={hunk.id} title={hunk.header} onClick={() => { void stageGitHunk(hunk.patch) }}>{gitComparison.staged ? <Minus size={11} /> : <Plus size={11} />}{gitComparison.staged ? 'Unstage' : 'Stage'} hunk {index + 1}</button>)}</div></div>
+                  <DiffEditor height="100%" original={gitComparison.before} modified={gitComparison.after} language={files.find((file) => file.path === gitComparison.path)?.language || 'plaintext'} theme="vs-dark" options={{ readOnly: true, renderSideBySide: true, automaticLayout: true, minimap: { enabled: false }, fontSize: settings.fontSize, fontFamily: "'JetBrains Mono', 'SFMono-Regular', Consolas, monospace", originalEditable: false, scrollBeyondLastLine: false }} />
+                </div>
+              ) : activeFile ? (
                 <Editor
                   height="100%"
                   path={`file:///${activeFile.path}`}
@@ -1737,6 +1852,7 @@ export default function App() {
                   <div className="empty-actions"><button onClick={() => setProjectModal(true)}>New project <kbd>⇧⌘N</kbd></button><button onClick={openDesktopFolder}>Open folder <kbd>⌘O</kbd></button><button onClick={() => setPalette({ open: true, mode: 'files' })}>Quick open <kbd>⌘P</kbd></button><button onClick={openNewFileDialog}>New file <kbd>⌘N</kbd></button><button onClick={runProject}>Run project <kbd>⌃↵</kbd></button></div>
                 </div>
               )}
+              </Suspense>
               {sidePreview && activeFile && activePath !== PREVIEW_PATH && <div className="side-preview-pane">
                 <div className="side-preview-heading"><span><Eye size={12} /> LIVE PREVIEW</span><button title="Close side preview" onClick={() => setSidePreview(false)}><X size={13} /></button></div>
                 <div className="side-preview-content"><Preview html={buildPreview()} onReload={() => notify('Preview refreshed')} /></div>
@@ -1747,7 +1863,7 @@ export default function App() {
               <div className="resize-handle horizontal" onMouseDown={startPanelResize} />
               <header className="panel-header">
                 <nav>{['PROBLEMS', 'OUTPUT', 'DEBUG CONSOLE', 'TERMINAL'].map((tab) => <button key={tab} className={panelTab === tab ? 'active' : ''} onClick={() => setPanelTab(tab)}>{tab}{tab === 'PROBLEMS' && <span className="tab-count">{problems.length}</span>}</button>)}</nav>
-                <div><span className="terminal-name"><TerminalSquare size={13} /> {window.tungsten ? 'pty' : 'sandbox'} <ChevronDown size={11} /></span><TipButton label="New terminal" onClick={() => { if (window.tungsten) newTerminal(); else { setPanelTab('TERMINAL'); setTerminalLines((lines) => [...lines, { text: '— new terminal session —', kind: 'muted' }]); window.setTimeout(() => terminalInputRef.current?.focus(), 20) } }}><Plus size={14} /></TipButton><TipButton label="Split terminal" active={terminalSplit} onClick={() => { if (terminalTabs.length < 2) newTerminal(); setTerminalSplit((value) => !value) }}><Columns2 size={13} /></TipButton><TipButton label="Restart terminal" onClick={() => { if (window.tungsten) setTerminalTabs((tabs) => tabs.map((terminal) => terminal.id === activeTerminalId ? { ...terminal, generation: terminal.generation + 1 } : terminal)); else setTerminalLines([]) }}><Trash2 size={13} /></TipButton><TipButton label="Maximize panel" onClick={() => setPanelHeight((height) => height > 400 ? 225 : Math.round(window.innerHeight * .62))}><Maximize2 size={13} /></TipButton><TipButton label="Close panel" onClick={() => setPanelOpen(false)}><X size={14} /></TipButton></div>
+                <div><span className="terminal-name"><TerminalSquare size={13} /> {window.tungsten ? 'pty' : 'sandbox'} <ChevronDown size={11} /></span><TipButton label="New terminal" onClick={() => { if (window.tungsten) newTerminal(); else { setPanelTab('TERMINAL'); setTerminalLines((lines) => [...lines, { text: '— new terminal session —', kind: 'muted' }]); window.setTimeout(() => terminalInputRef.current?.focus(), 20) } }}><Plus size={14} /></TipButton><TipButton label="Split terminal" active={terminalSplit} onClick={() => { if (terminalTabs.length < 2) newTerminal(); setTerminalSplit((value) => !value) }}><Columns2 size={13} /></TipButton><TipButton label="Find in terminal" active={terminalSearchOpen} onClick={() => setTerminalSearchOpen((value) => !value)}><Search size={13} /></TipButton><TipButton label="Restart terminal" onClick={() => { if (window.tungsten) setTerminalTabs((tabs) => tabs.map((terminal) => terminal.id === activeTerminalId ? { ...terminal, generation: terminal.generation + 1 } : terminal)); else setTerminalLines([]) }}><Trash2 size={13} /></TipButton><TipButton label="Maximize panel" onClick={() => setPanelHeight((height) => height > 400 ? 225 : Math.round(window.innerHeight * .62))}><Maximize2 size={13} /></TipButton><TipButton label="Close panel" onClick={() => setPanelOpen(false)}><X size={14} /></TipButton></div>
               </header>
               {panelContent()}
             </section>}

@@ -35,7 +35,7 @@ An executable extension declares its entry point, permissions, and SHA-256 integ
 {
   "id": "acme.runtime-tools",
   "name": "Runtime Tools",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "main": "extension.js",
   "integrity": "sha256-<hex digest of extension.js>",
   "permissions": ["commands"],

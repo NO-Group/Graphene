@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest'
 
 const main = readFileSync(new URL('../electron/main.cjs', import.meta.url), 'utf8')
 const preload = readFileSync(new URL('../electron/preload.cjs', import.meta.url), 'utf8')
+const rendererEntry = readFileSync(new URL('./main.tsx', import.meta.url), 'utf8')
+const configuredEditor = readFileSync(new URL('./components/ConfiguredEditor.tsx', import.meta.url), 'utf8')
 
 describe('desktop bridge contract', () => {
   it('registers every renderer-invoked IPC channel in the main process', () => {
@@ -25,5 +27,19 @@ describe('desktop bridge contract', () => {
     expect(main).toContain("ipcMain.handle('remote:ssh-connect'")
     expect(main).toContain("ipcMain.handle('collaboration:host'")
     expect(main).toContain("ipcMain.handle('workspace:search'")
+  })
+
+  it('ships multi-root, hunk staging, and structured test contracts', () => {
+    expect(main).toContain("ipcMain.handle('desktop:add-workspace-folder'")
+    expect(main).toContain("ipcMain.handle('desktop:git-stage-hunk'")
+    expect(main).toContain("ipcMain.handle('project:run-test'")
+    expect(main).toContain('workspace/didChangeWorkspaceFolders')
+  })
+
+  it('loads Monaco and its tested workers outside the renderer entry chunk', () => {
+    expect(rendererEntry).not.toContain("from 'monaco-editor'")
+    expect(configuredEditor).toContain("from 'monaco-editor'")
+    expect(configuredEditor).toContain('editor.worker.js?worker')
+    expect(configuredEditor).toContain('typescript/ts.worker.js?worker')
   })
 })

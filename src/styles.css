@@ -713,6 +713,38 @@ kbd { font-family: 'JetBrains Mono', monospace; }
 .toast svg { color: var(--accent); }
 @keyframes toast-in { from { transform: translateY(8px); opacity: 0; } }
 
+.workspace-roots { display: grid; gap: 2px; padding: 5px 8px; border-bottom: 1px solid #282c28; background: #171a17; }
+.workspace-roots > div { min-width: 0; display: flex; align-items: center; gap: 4px; height: 21px; padding-left: 5px; color: #8f978f; font: 9px/1 'JetBrains Mono', monospace; }
+.workspace-roots span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.workspace-roots button { border: 0; background: transparent; color: #727972; display: grid; place-items: center; }
+.workspace-roots button:hover { color: #e4e8e4; }
+
+.terminal-tab-strip select { margin-left: auto; max-width: 150px; height: 22px; border: 1px solid #323732; background: #191c19; color: #929992; font-size: 9px; }
+.terminal-search { position: absolute; z-index: 6; top: 31px; right: 14px; display: flex; align-items: center; gap: 4px; padding: 4px; background: #202420; border: 1px solid #495049; box-shadow: 0 5px 18px #0009; }
+.terminal-search input { width: 190px; border: 0; outline: 0; background: #111411; color: #d8ddd8; font: 10px 'JetBrains Mono', monospace; }
+.terminal-search button { height: 21px; padding: 0 6px; border: 1px solid #3a403a; background: #292e29; color: #aeb5ae; font-size: 9px; }
+.terminal-workspace { position: relative; }
+.terminal-loading { height: 100%; display: grid; place-items: center; color: #7d857d; font: 10px 'JetBrains Mono', monospace; background: #101210; }
+
+.git-compare-editor { width: 100%; height: 100%; min-width: 0; display: flex; flex-direction: column; background: #111311; }
+.git-compare-toolbar { min-height: 34px; padding: 5px 9px; border-bottom: 1px solid #2a2e2a; display: flex; align-items: center; gap: 10px; background: #171a17; }
+.git-compare-toolbar > span { min-width: 0; flex: 1; display: flex; align-items: center; gap: 6px; color: #c3c9c3; font-size: 10px; overflow: hidden; text-overflow: ellipsis; }
+.git-compare-toolbar > strong { color: #778078; font: 8px 'JetBrains Mono', monospace; letter-spacing: .5px; }
+.git-compare-toolbar > div { display: flex; gap: 4px; overflow-x: auto; }
+.git-compare-toolbar button { white-space: nowrap; display: flex; align-items: center; gap: 3px; height: 22px; padding: 0 7px; border: 1px solid #3b4436; background: #242a21; color: #bdcf9d; font-size: 8px; }
+.git-compare-editor > section, .git-compare-editor > div:last-child { flex: 1; min-height: 0; }
+
+.test-case-list > div.passed > button:first-child svg { color: #7eaa55; }
+.test-case-list > div.failed > button:first-child svg { color: #d16b66; }
+.test-result-detail { margin: 6px 8px; padding: 8px; border: 1px solid #323732; background: #121512; display: grid; gap: 5px; }
+.test-result-detail > strong { color: #94ba66; font-size: 9px; }
+.test-result-detail.failed > strong { color: #da7770; }
+.test-result-detail code { color: #d89b94; font: 8px/1.4 'JetBrains Mono', monospace; white-space: pre-wrap; }
+.test-result-detail pre { max-height: 150px; overflow: auto; margin: 0; padding-top: 5px; border-top: 1px solid #282d28; color: #9ba39b; font: 8px/1.5 'JetBrains Mono', monospace; white-space: pre-wrap; }
+.spin { animation: tungsten-spin .8s linear infinite; }
+@keyframes tungsten-spin { to { transform: rotate(360deg); } }
+.collaboration-cursor::before { content: ''; display: inline-block; width: 2px; height: 1.25em; margin-left: -1px; vertical-align: text-bottom; background: #d2ff72; box-shadow: 0 0 5px #d2ff72aa; }
+
 /* Scrollbars */
 * { scrollbar-width: thin; scrollbar-color: #414641 transparent; }
 ::-webkit-scrollbar { width: 9px; height: 9px; }

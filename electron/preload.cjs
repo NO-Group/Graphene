@@ -16,6 +16,8 @@ contextBridge.exposeInMainWorld('tungsten', {
   }),
 
   openFolder: () => ipcRenderer.invoke('desktop:open-folder'),
+  addWorkspaceFolder: () => ipcRenderer.invoke('desktop:add-workspace-folder'),
+  removeWorkspaceFolder: (prefix) => ipcRenderer.invoke('desktop:remove-workspace-folder', prefix),
   restoreWorkspace: () => ipcRenderer.invoke('desktop:restore-workspace'),
   refreshWorkspace: () => ipcRenderer.invoke('desktop:refresh-workspace'),
   writeFile: (path, content) => ipcRenderer.invoke('desktop:write-file', path, content),
@@ -34,6 +36,8 @@ contextBridge.exposeInMainWorld('tungsten', {
   gitStatus: () => ipcRenderer.invoke('desktop:git-status'),
   gitCommit: (message) => ipcRenderer.invoke('desktop:git-commit', message),
   gitDiff: (path, staged = false) => ipcRenderer.invoke('desktop:git-diff', path, staged),
+  gitFileVersions: (path, staged = false) => ipcRenderer.invoke('desktop:git-file-versions', path, staged),
+  gitStageHunk: (patch, reverse = false) => ipcRenderer.invoke('desktop:git-stage-hunk', patch, reverse),
   gitStage: (path, staged) => ipcRenderer.invoke('desktop:git-stage', path, staged),
   gitBranches: () => ipcRenderer.invoke('desktop:git-branches'),
   gitCheckout: (branch) => ipcRenderer.invoke('desktop:git-checkout', branch),
@@ -69,6 +73,7 @@ contextBridge.exposeInMainWorld('tungsten', {
 
   detectProject: () => ipcRenderer.invoke('project:detect'),
   discoverTests: () => ipcRenderer.invoke('project:discover-tests'),
+  runTest: (testId) => ipcRenderer.invoke('project:run-test', testId),
   readCoverage: () => ipcRenderer.invoke('project:coverage'),
   createProject: (template, name) => ipcRenderer.invoke('project:create', template, name),
   scanExtensions: () => ipcRenderer.invoke('extensions:scan'),
