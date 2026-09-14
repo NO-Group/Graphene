@@ -39,8 +39,12 @@ jobs:
         run: |
           set -o pipefail
           if ! npm run desktop:dist -- --publish never 2>&1 | tee installer-build.log; then
-            message="$(tail -n 1 installer-build.log | sed 's/%/%25/g; s/\r/%0D/g; s/\n/%0A/g')"
-            echo "::error title=Installer build failed::${message}"
+            tail -n 35 installer-build.log | while IFS= read -r line; do
+              if [ -n "$line" ]; then
+                message="$(printf '%s' "$line" | sed 's/%/%25/g; s/\r/%0D/g')"
+                echo "::error title=Installer build log::${message}"
+              fi
+            done
             exit 1
           fi
         env:
