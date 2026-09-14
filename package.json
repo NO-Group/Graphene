@@ -3,7 +3,10 @@
   "version": "2.0.0",
   "private": true,
   "description": "A rugged, cross-platform development environment.",
-  "author": "NO Group",
+  "author": {
+    "name": "NO Group",
+    "email": "NO-Group@users.noreply.github.com"
+  },
   "productName": "Tungsten IDE",
   "main": "electron/main.cjs",
   "type": "module",

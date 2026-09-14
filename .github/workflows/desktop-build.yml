@@ -34,6 +34,24 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run check
+      - name: Configure optional code signing
+        shell: bash
+        env:
+          SIGNING_LINK: ${{ runner.os == 'macOS' && secrets.MAC_CSC_LINK || runner.os == 'Windows' && secrets.WIN_CSC_LINK || '' }}
+          SIGNING_PASSWORD: ${{ runner.os == 'macOS' && secrets.MAC_CSC_PASSWORD || runner.os == 'Windows' && secrets.WIN_CSC_PASSWORD || '' }}
+          NOTARY_APPLE_ID: ${{ secrets.APPLE_ID }}
+          NOTARY_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          NOTARY_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [ -n "$SIGNING_LINK" ]; then
+            echo "CSC_LINK=$SIGNING_LINK" >> "$GITHUB_ENV"
+            echo "CSC_KEY_PASSWORD=$SIGNING_PASSWORD" >> "$GITHUB_ENV"
+          fi
+          if [ -n "$NOTARY_APPLE_ID" ]; then
+            echo "APPLE_ID=$NOTARY_APPLE_ID" >> "$GITHUB_ENV"
+            echo "APPLE_APP_SPECIFIC_PASSWORD=$NOTARY_PASSWORD" >> "$GITHUB_ENV"
+            echo "APPLE_TEAM_ID=$NOTARY_TEAM_ID" >> "$GITHUB_ENV"
+          fi
       - name: Build installers
         shell: bash
         run: |
@@ -45,11 +63,6 @@ jobs:
           fi
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-          CSC_LINK: ${{ runner.os == 'macOS' && secrets.MAC_CSC_LINK || runner.os == 'Windows' && secrets.WIN_CSC_LINK || '' }}
-          CSC_KEY_PASSWORD: ${{ runner.os == 'macOS' && secrets.MAC_CSC_PASSWORD || runner.os == 'Windows' && secrets.WIN_CSC_PASSWORD || '' }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
       - name: Upload installer build log
         if: failure()
         uses: actions/upload-artifact@v5
