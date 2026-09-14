@@ -5,6 +5,7 @@ import {
   Blocks,
   Bot,
   Box,
+  BugPlay,
   Braces,
   Check,
   ChevronDown,
@@ -12,29 +13,36 @@ import {
   ChevronsDownUp,
   CircleAlert,
   CircleCheck,
+  CircleStop,
   CircleUserRound,
   Columns2,
   Command,
   Copy,
   Ellipsis,
   ExternalLink,
+  Download,
   Eye,
   File,
   FileCode2,
+  FlaskConical,
   Files,
   Folder,
   FolderOpen,
   GitBranch,
   GitCommitHorizontal,
   Hammer,
+  ListChecks,
   Maximize2,
   Menu,
+  PackagePlus,
   PanelBottomClose,
   PanelBottomOpen,
   PanelLeftClose,
+  Pause,
   Play,
   Plus,
   Radio,
+  Rocket,
   RefreshCw,
   RotateCcw,
   Search,
@@ -42,16 +50,25 @@ import {
   ShieldCheck,
   SquareCode,
   SplitSquareHorizontal,
+  StepForward,
   TerminalSquare,
   Trash2,
   X,
   Zap,
 } from 'lucide-react'
 import { defaultFiles, fileIconClass, fileName, languageForPath, supportedLanguages, symbolsFor, type WorkspaceFile } from './workspace'
+import DesktopTerminal from './components/DesktopTerminal'
 import './styles.css'
 
-type Activity = 'explorer' | 'search' | 'source' | 'extensions'
+type Activity = 'explorer' | 'search' | 'source' | 'debug' | 'tests' | 'extensions'
 type PaletteMode = 'commands' | 'files'
+type CommandItem = {
+  label: string
+  detail: string
+  icon: typeof File
+  keys?: string[]
+  action: () => void | Promise<void>
+}
 type SettingsState = {
   fontSize: number
   wordWrap: boolean
@@ -71,6 +88,77 @@ type TreeNode = {
 const WORKSPACE_KEY = 'tungsten.workspace.v1'
 const SETTINGS_KEY = 'tungsten.settings.v1'
 const PREVIEW_PATH = '$preview'
+const lspLanguages = new Set(['javascript', 'typescript', 'python', 'rust', 'go', 'c', 'cpp', 'java', 'csharp', 'ruby', 'php', 'kotlin', 'lua'])
+const openedLspDocuments = new Set<string>()
+let languageProvidersRegistered = false
+let monacoApi: any = null
+
+async function prepareLanguageDocument(language: string, model: any) {
+  const api = window.tungsten
+  if (!api || !lspLanguages.has(language)) return null
+  const relativePath = model.uri.path.replace(/^\/+/, '')
+  const server = await api.startLanguageServer(language).catch(() => null)
+  if (!server?.running) return null
+  const uri = await api.fileUri(relativePath)
+  const key = `${language}:${uri}`
+  if (!openedLspDocuments.has(key)) {
+    await api.languageNotify(language, 'textDocument/didOpen', {
+      textDocument: { uri, languageId: language, version: model.getVersionId(), text: model.getValue() },
+    })
+    openedLspDocuments.add(key)
+  }
+  return { api, uri }
+}
+
+function registerLanguageProviders(monaco: any) {
+  if (languageProvidersRegistered || !window.tungsten) return
+  languageProvidersRegistered = true
+  for (const language of lspLanguages) {
+    monaco.languages.registerCompletionItemProvider(language, {
+      triggerCharacters: ['.', ':', '>', '/', '"', "'"],
+      provideCompletionItems: async (model: any, position: any) => {
+        const context = await prepareLanguageDocument(language, model)
+        if (!context) return { suggestions: [] }
+        const result = await context.api.languageRequest(language, 'textDocument/completion', {
+          textDocument: { uri: context.uri },
+          position: { line: position.lineNumber - 1, character: position.column - 1 },
+        }).catch(() => null)
+        const items = Array.isArray(result) ? result : result?.items || []
+        const word = model.getWordUntilPosition(position)
+        const fallbackRange = new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn)
+        return {
+          suggestions: items.slice(0, 200).map((item: any) => ({
+            label: typeof item.label === 'string' ? item.label : item.label?.label || 'completion',
+            detail: item.detail,
+            documentation: typeof item.documentation === 'string' ? item.documentation : item.documentation?.value,
+            insertText: item.textEdit?.newText || item.insertText || (typeof item.label === 'string' ? item.label : item.label?.label) || 'completion',
+            insertTextRules: item.insertTextFormat === 2 ? monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet : undefined,
+            kind: Math.max(0, Math.min(27, (item.kind || 1) - 1)),
+            range: item.textEdit?.range ? new monaco.Range(
+              item.textEdit.range.start.line + 1,
+              item.textEdit.range.start.character + 1,
+              item.textEdit.range.end.line + 1,
+              item.textEdit.range.end.character + 1,
+            ) : fallbackRange,
+          })),
+        }
+      },
+    })
+    monaco.languages.registerHoverProvider(language, {
+      provideHover: async (model: any, position: any) => {
+        const context = await prepareLanguageDocument(language, model)
+        if (!context) return null
+        const result = await context.api.languageRequest(language, 'textDocument/hover', {
+          textDocument: { uri: context.uri },
+          position: { line: position.lineNumber - 1, character: position.column - 1 },
+        }).catch(() => null)
+        if (!result?.contents) return null
+        const contents = Array.isArray(result.contents) ? result.contents : [result.contents]
+        return { contents: contents.map((entry: any) => ({ value: typeof entry === 'string' ? entry : entry.value || '' })) }
+      },
+    })
+  }
+}
 
 const defaultSettings: SettingsState = {
   fontSize: 13,
@@ -250,6 +338,8 @@ const activityItems = [
   { id: 'explorer' as const, label: 'Explorer', icon: Files },
   { id: 'search' as const, label: 'Search', icon: Search },
   { id: 'source' as const, label: 'Source Control', icon: GitBranch },
+  { id: 'debug' as const, label: 'Run and Debug', icon: BugPlay },
+  { id: 'tests' as const, label: 'Testing', icon: FlaskConical },
   { id: 'extensions' as const, label: 'Extensions', icon: Blocks },
 ]
 
@@ -279,11 +369,24 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState('')
   const [commitMessage, setCommitMessage] = useState('')
   const [gitInfo, setGitInfo] = useState<GitStatusResult>({ isRepository: false, branch: 'main', changes: [], error: '' })
+  const [gitBranches, setGitBranches] = useState<string[]>([])
+  const [projectInfo, setProjectInfo] = useState<ProjectInfo>({ tasks: [{ label: 'npm: dev', command: 'npm run dev' }, { label: 'npm: build', command: 'npm run build' }], tests: [], frameworks: ['Vite'] })
+  const [extensions, setExtensions] = useState<ExtensionManifest[]>([])
+  const [terminalSessionKey, setTerminalSessionKey] = useState(0)
+  const [terminalCommand, setTerminalCommand] = useState<{ id: number; command: string } | null>(null)
+  const [projectModal, setProjectModal] = useState(false)
+  const [projectTemplate, setProjectTemplate] = useState('web')
+  const [projectName, setProjectName] = useState('my-tungsten-app')
+  const [debugState, setDebugState] = useState<{ running: boolean; output: string[]; id?: string; threadId?: number }>({ running: false, output: [] })
+  const [breakpoints, setBreakpoints] = useState<Array<{ path: string; line: number }>>([])
+  const [lspState, setLspState] = useState<{ language: string; running: boolean; message: string }>({ language: '', running: false, message: 'Built-in syntax engine' })
+  const [problems, setProblems] = useState<Array<{ message: string; path: string; line: number; severity: number }>>([])
+  const [updateState, setUpdateState] = useState('Up to date')
   const [editorInstance, setEditorInstance] = useState<any>(null)
   const [toast, setToast] = useState('')
   const [menuOpen, setMenuOpen] = useState<string | null>(null)
   const [terminalLines, setTerminalLines] = useState<Array<{ text: string; kind?: string }>>([
-    { text: `Tungsten Shell 0.3.0  ·  ${window.tungsten ? 'desktop process runner' : 'web sandbox'}`, kind: 'muted' },
+    { text: `Tungsten Shell 1.0.0  ·  ${window.tungsten ? 'desktop process runner' : 'web sandbox'}`, kind: 'muted' },
     { text: `${supportedLanguages.length} language grammars loaded. Type “help” for available commands.`, kind: 'success' },
   ])
   const [terminalInput, setTerminalInput] = useState('')
@@ -320,7 +423,10 @@ export default function App() {
         setDirty(new Set())
         notify('All files saved')
       }
-      if (window.tungsten && workspaceRoot) window.tungsten.gitStatus().then(setGitInfo).catch(() => undefined)
+      if (window.tungsten && workspaceRoot) {
+        window.tungsten.gitStatus().then(setGitInfo).catch(() => undefined)
+        if (!path) void window.tungsten.clearRecovery()
+      }
     }
 
     try {
@@ -356,6 +462,19 @@ export default function App() {
     setActivePath(preferred?.path || '')
     setDirty(new Set())
     window.tungsten?.gitStatus().then(setGitInfo).catch(() => undefined)
+    window.tungsten?.gitBranches().then(setGitBranches).catch(() => setGitBranches([]))
+    window.tungsten?.detectProject().then(setProjectInfo).catch(() => undefined)
+    window.tungsten?.scanExtensions().then(setExtensions).catch(() => undefined)
+    window.tungsten?.loadRecovery().then((snapshot) => {
+      if (!snapshot?.files?.length || snapshot.workspaceRoot !== result.path) return
+      if (window.confirm(`Tungsten found ${snapshot.files.length} recovered file${snapshot.files.length === 1 ? '' : 's'} from an interrupted session. Restore them?`)) {
+        setFiles((current) => current.map((file) => snapshot.files.find((saved: WorkspaceFile) => saved.path === file.path) || file))
+        setDirty(new Set(snapshot.files.map((file: WorkspaceFile) => file.path)))
+        notify('Recovery snapshot restored')
+      } else {
+        void window.tungsten?.clearRecovery()
+      }
+    }).catch(() => undefined)
     setTerminalLines((lines) => [...lines, { text: `${restored ? 'Restored' : 'Opened'} ${result.path} · ${result.files!.length} text files indexed`, kind: 'success' }])
     notify(result.truncated ? 'Workspace opened; 4,000-file index limit reached' : `${result.name} ${restored ? 'restored' : 'opened'}`)
   }, [notify])
@@ -383,7 +502,7 @@ export default function App() {
   }
 
   const updateFile = (value?: string) => {
-    if (!activeFile || value === undefined) return
+    if (!activeFile || activeFile.language === 'diff' || value === undefined) return
     setFiles((current) => current.map((file) => file.path === activePath ? { ...file, content: value } : file))
     setDirty((current) => new Set(current).add(activePath))
   }
@@ -594,7 +713,124 @@ export default function App() {
     setTerminalLines((lines) => [...lines, ...base])
   }
 
-  const commands = [
+  const runIntegratedCommand = (command: string) => {
+    setPanelOpen(true)
+    setPanelTab('TERMINAL')
+    if (window.tungsten && workspaceRoot) {
+      setTerminalCommand((current) => ({ id: (current?.id || 0) + 1, command }))
+    } else {
+      runTerminalCommand(command)
+    }
+  }
+
+  const createProjectFromTemplate = async () => {
+    if (!window.tungsten) {
+      notify('Project templates are available in the desktop app')
+      return
+    }
+    try {
+      const result = await window.tungsten.createProject(projectTemplate, projectName)
+      if (!result.canceled) {
+        applyDesktopWorkspace(result)
+        setProjectModal(false)
+      }
+    } catch (error) {
+      notify(`Project creation failed: ${(error as Error).message}`)
+    }
+  }
+
+  const startDebugging = async () => {
+    if (!window.tungsten || !workspaceRoot) {
+      notify('Open a desktop workspace before debugging')
+      return
+    }
+    const launchFile = files.find((file) => file.path === '.tungsten/launch.json')
+    if (!launchFile) {
+      setActivity('debug')
+      setSidebarVisible(true)
+      notify('Create .tungsten/launch.json to configure a debug adapter')
+      return
+    }
+    try {
+      const manifest = JSON.parse(launchFile.content)
+      const configuration = manifest.configurations?.[0]
+      if (!configuration) throw new Error('No launch configuration was found.')
+      const { id } = await window.tungsten.startDebug(configuration)
+      setDebugState({ running: true, id, output: [`Started ${configuration.name || 'debug adapter'}`] })
+      await window.tungsten.sendDebug(id, {
+        type: 'request',
+        command: 'initialize',
+        arguments: { clientID: 'tungsten', clientName: 'Tungsten IDE', adapterID: configuration.type || 'custom', pathFormat: 'path', linesStartAt1: true, columnsStartAt1: true },
+      })
+      setActivity('debug')
+      setSidebarVisible(true)
+    } catch (error) {
+      setDebugState({ running: false, output: [(error as Error).message] })
+      notify(`Debugger failed: ${(error as Error).message}`)
+    }
+  }
+
+  const stopDebugging = async () => {
+    if (window.tungsten && debugState.id) await window.tungsten.stopDebug(debugState.id)
+    setDebugState((state) => ({ ...state, running: false, output: [...state.output, 'Debug session stopped'] }))
+  }
+
+  const toggleBreakpoint = async (path: string, line: number) => {
+    const exists = breakpoints.some((point) => point.path === path && point.line === line)
+    const next = exists ? breakpoints.filter((point) => point.path !== path || point.line !== line) : [...breakpoints, { path, line }]
+    setBreakpoints(next)
+    if (window.tungsten && debugState.id) {
+      try {
+        const absolutePath = await window.tungsten.absolutePath(path)
+        await window.tungsten.sendDebug(debugState.id, {
+          type: 'request',
+          command: 'setBreakpoints',
+          arguments: { source: { path: absolutePath }, breakpoints: next.filter((point) => point.path === path).map((point) => ({ line: point.line })) },
+        })
+      } catch (error) {
+        notify(`Breakpoint sync failed: ${(error as Error).message}`)
+      }
+    }
+  }
+
+  const installExtension = async () => {
+    if (!window.tungsten) {
+      notify('Local extensions are available in the desktop app')
+      return
+    }
+    try {
+      const result = await window.tungsten.installExtensionFolder()
+      setExtensions(result.extensions)
+      if (!result.canceled) notify('Extension installed')
+    } catch (error) {
+      notify(`Extension install failed: ${(error as Error).message}`)
+    }
+  }
+
+  const openGitDiff = async (path: string) => {
+    if (!window.tungsten) return
+    try {
+      const { diff } = await window.tungsten.gitDiff(path)
+      const virtualPath = `.tungsten/diffs/${fileName(path)}.diff`
+      setFiles((current) => [...current.filter((file) => file.path !== virtualPath), { path: virtualPath, content: diff, language: 'diff' }])
+      openFile(virtualPath)
+    } catch (error) {
+      notify(`Could not open diff: ${(error as Error).message}`)
+    }
+  }
+
+  const extensionCommands: CommandItem[] = extensions.flatMap((extension) => {
+    const contributions = extension.contributes as { commands?: Array<{ id?: string; title?: string; command?: string }> }
+    return (contributions.commands || []).filter((command) => command.title && command.command).map((command) => ({
+      label: `Extension: ${command.title}`,
+      detail: `${extension.name} · ${command.command}`,
+      icon: Blocks,
+      action: () => runIntegratedCommand(command.command!),
+    }))
+  })
+
+  const commands: CommandItem[] = [
+    { label: 'Project: New From Template', detail: 'Web, Node.js, Python, Rust or Go', icon: Rocket, keys: ['⌘', '⇧', 'N'], action: () => setProjectModal(true) },
     { label: 'File: Open Folder', detail: window.tungsten ? 'Open a local project from this computer' : 'Available in the desktop app', icon: FolderOpen, keys: ['⌘', 'O'], action: openDesktopFolder },
     { label: 'File: New File', detail: 'Create a file in the workspace', icon: File, keys: ['⌘', 'N'], action: openNewFileDialog },
     { label: 'File: Rename Active File', detail: activeFile?.path || 'No editable file active', icon: FileCode2, action: () => { if (activeFile) renameFile(activeFile.path) } },
@@ -604,6 +840,12 @@ export default function App() {
     { label: 'Editor: Format Document', detail: 'Run the registered Monaco formatter', icon: Braces, keys: ['⇧', '⌥', 'F'], action: () => runEditorAction('editor.action.formatDocument') },
     { label: 'Editor: Toggle Word Wrap', detail: settings.wordWrap ? 'Word wrap is on' : 'Word wrap is off', icon: ChevronsDownUp, action: () => setSettings((current) => ({ ...current, wordWrap: !current.wordWrap })) },
     { label: 'Run: Open Live Preview', detail: 'Build and run the current workspace', icon: Play, keys: ['⌃', '↵'], action: runProject },
+    { label: 'Debug: Start or Stop Session', detail: debugState.running ? 'Stop the active DAP session' : 'Start from .tungsten/launch.json', icon: BugPlay, keys: ['F5'], action: () => { if (debugState.running) void stopDebugging(); else void startDebugging() } },
+    { label: 'Test: Show Test Explorer', detail: `${projectInfo.tests.length} test profiles detected`, icon: FlaskConical, action: () => { setActivity('tests'); setSidebarVisible(true) } },
+    ...projectInfo.tasks.slice(0, 12).map((task) => ({ label: `Task: ${task.label}`, detail: task.command, icon: ListChecks, action: () => runIntegratedCommand(task.command) })),
+    ...extensionCommands,
+    { label: 'Extensions: Install From Folder', detail: 'Install a declarative Tungsten extension', icon: PackagePlus, action: () => { void installExtension() } },
+    { label: 'Update: Check for Updates', detail: updateState, icon: Download, action: () => { void window.tungsten?.checkForUpdates().then((result) => notify(result.message || (result.available ? 'Update available' : 'Tungsten is up to date'))) } },
     { label: 'View: Toggle Side Preview', detail: sidePreview ? 'Close the side preview' : 'Preview beside the editor', icon: Columns2, action: () => setSidePreview((value) => !value) },
     { label: 'View: Toggle Primary Side Bar', detail: sidebarVisible ? 'Hide the explorer' : 'Show the explorer', icon: PanelLeftClose, keys: ['⌘', 'B'], action: () => setSidebarVisible((value) => !value) },
     { label: 'View: Toggle Panel', detail: panelOpen ? 'Hide the bottom panel' : 'Show the bottom panel', icon: PanelBottomOpen, keys: ['⌘', 'J'], action: () => setPanelOpen((value) => !value) },
@@ -612,13 +854,13 @@ export default function App() {
     { label: 'Workspace: Reset Starter', detail: 'Restore all starter files', icon: RotateCcw, action: resetWorkspace },
   ]
 
-  const paletteItems = palette.mode === 'files'
+  const paletteItems: CommandItem[] = palette.mode === 'files'
     ? files.filter((file) => file.path.toLowerCase().includes(paletteQuery.toLowerCase())).map((file) => ({
         label: fileName(file.path), detail: file.path, icon: FileCode2, action: () => openFile(file.path), keys: [] as string[],
       }))
     : commands.filter((command) => `${command.label} ${command.detail}`.toLowerCase().includes(paletteQuery.toLowerCase()))
 
-  const executePaletteItem = (action: () => void) => {
+  const executePaletteItem = (action: CommandItem['action']) => {
     action()
     setPalette({ ...palette, open: false })
     setPaletteQuery('')
@@ -631,6 +873,91 @@ export default function App() {
       .then((result) => applyDesktopWorkspace(result, true))
       .catch(() => undefined)
   }, [applyDesktopWorkspace])
+
+  useEffect(() => {
+    if (!window.tungsten || !activeFile || !workspaceRoot || !lspLanguages.has(activeFile.language)) return
+    let canceled = false
+    const timer = window.setTimeout(() => {
+      window.tungsten!.startLanguageServer(activeFile.language).then((status) => {
+        if (canceled) return
+        setLspState({ language: activeFile.language, running: status.running, message: status.running ? `${activeFile.language} language server` : status.error || 'Syntax highlighting only' })
+      }).catch((error: Error) => {
+        if (!canceled) setLspState({ language: activeFile.language, running: false, message: error.message })
+      })
+    }, 350)
+    return () => { canceled = true; window.clearTimeout(timer) }
+  }, [activeFile, workspaceRoot])
+
+  useEffect(() => {
+    if (!window.tungsten || !activeFile || !workspaceRoot || !lspLanguages.has(activeFile.language)) return
+    const timer = window.setTimeout(async () => {
+      const model = editorInstance?.getModel()
+      if (!model) return
+      const context = await prepareLanguageDocument(activeFile.language, model)
+      if (!context) return
+      await context.api.languageNotify(activeFile.language, 'textDocument/didChange', {
+        textDocument: { uri: context.uri, version: model.getVersionId() },
+        contentChanges: [{ text: model.getValue() }],
+      })
+    }, 450)
+    return () => window.clearTimeout(timer)
+  }, [activeFile, editorInstance, workspaceRoot])
+
+  useEffect(() => {
+    if (!window.tungsten) return
+    const unsubscribeLanguage = window.tungsten.onLanguageNotification(({ language, message }) => {
+      if (message.method !== 'textDocument/publishDiagnostics' || !monacoApi) return
+      const diagnostics = message.params?.diagnostics || []
+      const uri = decodeURIComponent(message.params?.uri || '')
+      const model = monacoApi.editor.getModels().find((candidate: any) => uri.endsWith(decodeURIComponent(candidate.uri.path)))
+      if (!model) return
+      const problemPath = model.uri.path.replace(/^\/+/, '')
+      setProblems(diagnostics.map((diagnostic: any) => ({ message: diagnostic.message, path: problemPath, line: diagnostic.range.start.line + 1, severity: diagnostic.severity || 3 })))
+      monacoApi.editor.setModelMarkers(model, `tungsten-${language}`, diagnostics.map((diagnostic: any) => ({
+        startLineNumber: diagnostic.range.start.line + 1,
+        startColumn: diagnostic.range.start.character + 1,
+        endLineNumber: diagnostic.range.end.line + 1,
+        endColumn: diagnostic.range.end.character + 1,
+        message: diagnostic.message,
+        source: diagnostic.source || language,
+        code: diagnostic.code?.toString(),
+        severity: diagnostic.severity === 1 ? monacoApi.MarkerSeverity.Error : diagnostic.severity === 2 ? monacoApi.MarkerSeverity.Warning : monacoApi.MarkerSeverity.Info,
+      })))
+    })
+    const unsubscribeStatus = window.tungsten.onLanguageStatus(({ language, running }) => setLspState({ language, running, message: running ? `${language} language server` : `${language} server stopped` }))
+    const unsubscribeDebugMessage = window.tungsten.onDebugMessage(({ id, message }) => {
+      if (message.type === 'event' && message.event === 'initialized') {
+        void (async () => {
+          const grouped = new Map<string, Array<{ path: string; line: number }>>()
+          breakpoints.forEach((point) => grouped.set(point.path, [...(grouped.get(point.path) || []), point]))
+          for (const [path, points] of grouped) {
+            const absolutePath = await window.tungsten!.absolutePath(path)
+            await window.tungsten!.sendDebug(id, { type: 'request', command: 'setBreakpoints', arguments: { source: { path: absolutePath }, breakpoints: points.map((point) => ({ line: point.line })) } })
+          }
+          await window.tungsten!.sendDebug(id, { type: 'request', command: 'configurationDone', arguments: {} })
+        })()
+      } else if (message.type === 'event' && message.event === 'output') setDebugState((state) => ({ ...state, output: [...state.output, message.body?.output || ''] }))
+      else if (message.type === 'event' && message.event === 'stopped') setDebugState((state) => ({ ...state, threadId: message.body?.threadId, output: [...state.output, `Paused: ${message.body?.reason || 'breakpoint'}`] }))
+      else if (message.type === 'response' && message.success === false) setDebugState((state) => ({ ...state, output: [...state.output, message.message || `${message.command} failed`] }))
+    })
+    const unsubscribeDebugOutput = window.tungsten.onDebugOutput(({ output }) => setDebugState((state) => ({ ...state, output: [...state.output, output] })))
+    const unsubscribeDebugExit = window.tungsten.onDebugExit(({ code }) => setDebugState((state) => ({ ...state, running: false, output: [...state.output, `Adapter exited with code ${code}`] })))
+    const unsubscribeUpdater = window.tungsten.onUpdaterStatus(({ event }) => {
+      const labels: Record<string, string> = { 'checking-for-update': 'Checking for updates…', 'update-available': 'Update available', 'update-not-available': 'Up to date', 'download-progress': 'Downloading update…', 'update-downloaded': 'Restart to update', error: 'Update check failed' }
+      setUpdateState(labels[event] || event)
+      if (event === 'update-available') void window.tungsten?.downloadUpdate()
+    })
+    return () => { unsubscribeLanguage(); unsubscribeStatus(); unsubscribeDebugMessage(); unsubscribeDebugOutput(); unsubscribeDebugExit(); unsubscribeUpdater() }
+  }, [breakpoints])
+
+  useEffect(() => {
+    if (!window.tungsten || !workspaceRoot || !dirty.size) return
+    const timer = window.setTimeout(() => {
+      const changedFiles = files.filter((file) => dirty.has(file.path))
+      void window.tungsten!.saveRecovery({ workspaceRoot, savedAt: Date.now(), files: changedFiles })
+    }, 1200)
+    return () => window.clearTimeout(timer)
+  }, [dirty, files, workspaceRoot])
 
   useEffect(() => {
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings))
@@ -706,15 +1033,18 @@ export default function App() {
   }
 
   const panelContent = () => {
-    if (panelTab === 'PROBLEMS') return (
+    if (panelTab === 'PROBLEMS') return problems.length ? (
+      <div className="problems-list">{problems.map((problem, index) => <button key={`${problem.path}-${problem.line}-${index}`} onClick={() => { openFile(problem.path); editorInstance?.setPosition({ lineNumber: problem.line, column: 1 }); editorInstance?.revealLineInCenter(problem.line) }}><CircleAlert size={13} className={problem.severity === 1 ? 'error' : 'warning'} /><span>{problem.message}</span><small>{problem.path}:{problem.line}</small></button>)}</div>
+    ) : (
       <div className="empty-panel"><CircleCheck size={24} /><strong>No problems detected</strong><span>Workspace validation passed.</span></div>
     )
     if (panelTab === 'OUTPUT') return (
-      <div className="output-panel"><span>[Tungsten]</span> Workspace indexed in 184ms<br /><span>[Vite]</span> Development graph ready<br /><span>[Git]</span> Watching repository changes</div>
+      <div className="output-panel"><span>[Tungsten]</span> Workspace index ready · {files.length} files<br /><span>[Project]</span> {projectInfo.frameworks.join(', ') || 'No framework detected'}<br /><span>[Language]</span> {lspState.message}<br /><span>[Git]</span> {gitInfo.isRepository ? `Watching ${gitInfo.branch}` : 'No repository detected'}</div>
     )
     if (panelTab === 'DEBUG CONSOLE') return (
-      <div className="empty-panel"><Bot size={24} /><strong>Debug console is ready</strong><span>Start a debug session to inspect values.</span></div>
+      <div className="debug-console-output">{debugState.output.length ? debugState.output.map((line, index) => <div key={index}>{line}</div>) : <div className="empty-panel"><Bot size={24} /><strong>Debug console is ready</strong><span>Start a debug session to inspect values.</span></div>}</div>
     )
+    if (window.tungsten && workspaceRoot) return <DesktopTerminal sessionKey={terminalSessionKey} command={terminalCommand} />
     return (
       <div className="terminal" onClick={() => terminalInputRef.current?.focus()}>
         <div className="terminal-scroll">
@@ -779,6 +1109,7 @@ export default function App() {
     if (activity === 'source') return (
       <>
         <div className="sidebar-title"><span>SOURCE CONTROL</span><span className="branch-label"><GitBranch size={11} />{gitInfo.branch || 'no repository'}</span></div>
+        {gitBranches.length > 0 && <div className="branch-switcher"><GitBranch size={13} /><select value={gitInfo.branch} onChange={(event) => { void window.tungsten?.gitCheckout(event.target.value).then((status) => { setGitInfo(status); void refreshWorkspace() }).catch((error: Error) => notify(error.message)) }}>{gitBranches.map((branch) => <option key={branch}>{branch}</option>)}</select></div>}
         <div className="commit-box">
           <textarea
             value={commitMessage}
@@ -794,21 +1125,51 @@ export default function App() {
         ) : sourceChanges.length === 0 ? (
           <div className="sidebar-empty"><GitCommitHorizontal size={25} /><span>Working tree is clean</span></div>
         ) : sourceChanges.map(({ path, status }) => (
-          <button className="change-row" key={path} onClick={() => files.some((file) => file.path === path) && openFile(path)}><FileGlyph path={path} /><span>{fileName(path)}</span><small>{path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : ''}</small><b>{status}</b></button>
+          <div className="change-row" key={path}>
+            <button className="change-main" onClick={() => { if (window.tungsten) void openGitDiff(path); else if (files.some((file) => file.path === path)) openFile(path) }}><FileGlyph path={path} /><span>{fileName(path)}</span><small>{path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : ''}</small></button>
+            {window.tungsten && <button className="stage-button" title="Stage file" onClick={() => { void window.tungsten!.gitStage(path, true).then(setGitInfo).catch((error: Error) => notify(error.message)) }}><Plus size={12} /></button>}
+            <b>{status}</b>
+          </div>
         ))}
+      </>
+    )
+    if (activity === 'debug') return (
+      <>
+        <div className="sidebar-title"><span>RUN AND DEBUG</span><TipButton label={debugState.running ? 'Stop debugging' : 'Start debugging'} onClick={() => { if (debugState.running) void stopDebugging(); else void startDebugging() }}>{debugState.running ? <CircleStop size={15} /> : <Play size={15} />}</TipButton></div>
+        <div className="debug-launch">
+          <button className={debugState.running ? 'stop' : ''} onClick={() => { if (debugState.running) void stopDebugging(); else void startDebugging() }}>{debugState.running ? <CircleStop size={15} /> : <BugPlay size={15} />}{debugState.running ? 'Stop session' : 'Start debugging'}<kbd>F5</kbd></button>
+          <p>{files.some((file) => file.path === '.tungsten/launch.json') ? 'Using .tungsten/launch.json' : 'Add .tungsten/launch.json with your DAP adapter configuration.'}</p>
+        </div>
+        {debugState.running && debugState.id && <div className="debug-controls"><button title="Continue" onClick={() => { void window.tungsten?.sendDebug(debugState.id!, { type: 'request', command: 'continue', arguments: { threadId: debugState.threadId || 1 } }) }}><Play size={13} /></button><button title="Pause" onClick={() => { void window.tungsten?.sendDebug(debugState.id!, { type: 'request', command: 'pause', arguments: { threadId: debugState.threadId || 1 } }) }}><Pause size={13} /></button><button title="Step over" onClick={() => { void window.tungsten?.sendDebug(debugState.id!, { type: 'request', command: 'next', arguments: { threadId: debugState.threadId || 1 } }) }}><StepForward size={13} /></button><span>DAP SESSION</span></div>}
+        <div className="section-heading"><ChevronDown size={13} /><span>BREAKPOINTS</span><span className="count-pill">{breakpoints.length}</span><TipButton label="Add breakpoint at cursor" onClick={() => { if (activeFile) void toggleBreakpoint(activeFile.path, cursor.line) }}><Plus size={13} /></TipButton></div>
+        <div className="breakpoint-list">{breakpoints.length ? breakpoints.map((point) => <button key={`${point.path}:${point.line}`} onClick={() => { openFile(point.path); setCursor({ line: point.line, column: 1 }); editorInstance?.revealLineInCenter(point.line); editorInstance?.setPosition({ lineNumber: point.line, column: 1 }) }}><span className="breakpoint-dot" /><strong>{fileName(point.path)}</strong><small>line {point.line}</small><X size={12} onClick={(event) => { event.stopPropagation(); void toggleBreakpoint(point.path, point.line) }} /></button>) : <p>No breakpoints set</p>}</div>
+        <div className="section-heading"><ChevronDown size={13} /><span>DEBUG OUTPUT</span></div>
+        <div className="debug-sidebar-output">{debugState.output.slice(-8).map((line, index) => <p key={index}>{line}</p>)}</div>
+      </>
+    )
+    if (activity === 'tests') return (
+      <>
+        <div className="sidebar-title"><span>TESTING & TASKS</span><TipButton label="Refresh project tasks" onClick={() => { void window.tungsten?.detectProject().then(setProjectInfo) }}><RefreshCw size={14} /></TipButton></div>
+        <div className="framework-tags">{projectInfo.frameworks.length ? projectInfo.frameworks.map((framework) => <span key={framework}>{framework}</span>) : <span>No framework detected</span>}</div>
+        <div className="section-heading"><ChevronDown size={13} /><span>TEST PROFILES</span><span className="count-pill">{projectInfo.tests.length}</span></div>
+        <div className="task-list">{projectInfo.tests.length ? projectInfo.tests.map((task) => <button key={task.label} onClick={() => runIntegratedCommand(task.command)}><FlaskConical size={14} /><span><strong>{task.label}</strong><small>{task.command}</small></span><Play size={12} /></button>) : <div className="sidebar-empty compact"><FlaskConical size={22} /><span>No test runner detected</span></div>}</div>
+        <div className="section-heading"><ChevronDown size={13} /><span>PROJECT TASKS</span><span className="count-pill">{projectInfo.tasks.length}</span></div>
+        <div className="task-list">{projectInfo.tasks.map((task) => <button key={`${task.label}-${task.command}`} onClick={() => runIntegratedCommand(task.command)}><ListChecks size={14} /><span><strong>{task.label}</strong><small>{task.command}</small></span><Play size={12} /></button>)}</div>
       </>
     )
     if (activity === 'extensions') return (
       <>
-        <div className="sidebar-title"><span>EXTENSIONS</span><Ellipsis size={16} /></div>
-        <div className="search-box-wrap"><Search size={13} /><input placeholder="Search extensions" /></div>
-        <div className="section-heading"><span>INSTALLED</span><span className="count-pill">4</span></div>
+        <div className="sidebar-title"><span>EXTENSIONS</span><TipButton label="Install extension from folder" onClick={() => { void installExtension() }}><PackagePlus size={15} /></TipButton></div>
+        <div className="search-box-wrap"><Search size={13} /><input placeholder="Search installed extensions" /></div>
+        <div className="extension-install-banner"><PackagePlus size={17} /><div><strong>Declarative extensions</strong><p>Install commands, themes and language contributions from a local folder.</p></div><button onClick={() => { void installExtension() }}>Install</button></div>
+        <div className="section-heading"><span>INSTALLED</span><span className="count-pill">{4 + extensions.length}</span></div>
         {[
-          ['Language Core', `${supportedLanguages.length} bundled language grammars`, 'L'],
-          ['Prettier', 'Opinionated code formatter', 'P'],
-          ['ESLint', 'Integrates ESLint into Tungsten', 'E'],
-          ['GitLens', 'Supercharge Git capabilities', 'G'],
-        ].map(([name, description, icon]) => <div className="extension-card" key={name}><div className={`extension-icon ext-${icon.toLowerCase()}`}>{icon}</div><div><strong>{name}</strong><p>{description}</p><span>Enabled</span></div><Settings size={13} /></div>)}
+          { id: 'core.languages', name: 'Language Core', description: `${supportedLanguages.length} bundled language grammars`, icon: 'L', publisher: 'Tungsten' },
+          { id: 'core.format', name: 'Formatter Core', description: 'Monaco document formatting bridge', icon: 'P', publisher: 'Tungsten' },
+          { id: 'core.git', name: 'Git Tools', description: 'Diffs, staging, branches and commits', icon: 'G', publisher: 'Tungsten' },
+          { id: 'core.debug', name: 'Debug Adapter Core', description: 'Debug Adapter Protocol transport', icon: 'D', publisher: 'Tungsten' },
+          ...extensions.map((extension) => ({ id: extension.id, name: extension.name, description: extension.description, icon: extension.name[0] || 'E', publisher: extension.publisher })),
+        ].map((extension) => <div className="extension-card" key={extension.id}><div className={`extension-icon ext-${extension.icon.toLowerCase()}`}>{extension.icon}</div><div><strong>{extension.name}</strong><p>{extension.description}</p><span>{extension.publisher} · Enabled</span></div><Settings size={13} /></div>)}
       </>
     )
     return (
@@ -827,6 +1188,7 @@ export default function App() {
 
   const menus: Record<string, Array<{ label: string; shortcut?: string; action: () => void; divider?: boolean }>> = {
     File: [
+      { label: 'New Project…', shortcut: 'Ctrl+Shift+N', action: () => setProjectModal(true) },
       { label: 'Open Folder…', shortcut: 'Ctrl+O', action: openDesktopFolder },
       { label: 'New File…', shortcut: 'Ctrl+N', action: openNewFileDialog },
       { label: 'Open File…', shortcut: 'Ctrl+P', action: () => setPalette({ open: true, mode: 'files' }) },
@@ -858,7 +1220,7 @@ export default function App() {
     ],
     Run: [
       { label: 'Run Project', shortcut: 'Ctrl+Enter', action: runProject },
-      { label: 'Start Debugging', shortcut: 'F5', action: () => { setPanelOpen(true); setPanelTab('DEBUG CONSOLE'); notify('Debug session started') } },
+      { label: debugState.running ? 'Stop Debugging' : 'Start Debugging', shortcut: 'F5', action: () => { if (debugState.running) void stopDebugging(); else void startDebugging() } },
     ],
     Terminal: [
       { label: 'New Terminal', shortcut: 'Ctrl+Shift+`', action: () => { setPanelOpen(true); setPanelTab('TERMINAL') } },
@@ -907,7 +1269,8 @@ export default function App() {
                 else { setActivity(item.id); setSidebarVisible(true) }
               }} aria-label={item.label} title={item.label}>
                 <Icon size={21} strokeWidth={1.65} />
-                {item.id === 'source' && dirty.size > 0 && <span className="activity-badge">{dirty.size}</span>}
+                {item.id === 'source' && sourceChanges.length > 0 && <span className="activity-badge">{sourceChanges.length}</span>}
+                {item.id === 'tests' && projectInfo.tests.length > 0 && <span className="activity-badge">{projectInfo.tests.length}</span>}
               </button>
             })}
           </div>
@@ -953,6 +1316,8 @@ export default function App() {
                   value={activeFile.content}
                   theme="tungsten-dark"
                   beforeMount={(monaco) => {
+                    monacoApi = monaco
+                    registerLanguageProviders(monaco)
                     monaco.editor.defineTheme('tungsten-dark', {
                       base: 'vs-dark',
                       inherit: true,
@@ -991,6 +1356,7 @@ export default function App() {
                   }}
                   options={{
                     fontFamily: "'JetBrains Mono', 'SFMono-Regular', Consolas, monospace",
+                    readOnly: activeFile.language === 'diff',
                     fontSize: settings.fontSize,
                     lineHeight: Math.round(settings.fontSize * 1.62),
                     fontLigatures: true,
@@ -1016,7 +1382,7 @@ export default function App() {
               ) : (
                 <div className="empty-editor">
                   <div className="empty-brand"><Hammer size={41} /></div><h2>TUNGSTEN</h2><p>A development environment forged for focus.</p>
-                  <div className="empty-actions"><button onClick={openDesktopFolder}>Open folder <kbd>⌘O</kbd></button><button onClick={() => setPalette({ open: true, mode: 'files' })}>Quick open <kbd>⌘P</kbd></button><button onClick={openNewFileDialog}>New file <kbd>⌘N</kbd></button><button onClick={runProject}>Run project <kbd>⌃↵</kbd></button></div>
+                  <div className="empty-actions"><button onClick={() => setProjectModal(true)}>New project <kbd>⇧⌘N</kbd></button><button onClick={openDesktopFolder}>Open folder <kbd>⌘O</kbd></button><button onClick={() => setPalette({ open: true, mode: 'files' })}>Quick open <kbd>⌘P</kbd></button><button onClick={openNewFileDialog}>New file <kbd>⌘N</kbd></button><button onClick={runProject}>Run project <kbd>⌃↵</kbd></button></div>
                 </div>
               )}
               {sidePreview && activeFile && activePath !== PREVIEW_PATH && <div className="side-preview-pane">
@@ -1028,8 +1394,8 @@ export default function App() {
             {panelOpen && <section className="bottom-panel" style={{ height: panelHeight }}>
               <div className="resize-handle horizontal" onMouseDown={startPanelResize} />
               <header className="panel-header">
-                <nav>{['PROBLEMS', 'OUTPUT', 'DEBUG CONSOLE', 'TERMINAL'].map((tab) => <button key={tab} className={panelTab === tab ? 'active' : ''} onClick={() => setPanelTab(tab)}>{tab}{tab === 'PROBLEMS' && <span className="tab-count">0</span>}</button>)}</nav>
-                <div><span className="terminal-name"><TerminalSquare size={13} /> zsh <ChevronDown size={11} /></span><TipButton label="New terminal" onClick={() => { setPanelTab('TERMINAL'); setTerminalLines((lines) => [...lines, { text: '— new terminal session —', kind: 'muted' }]); window.setTimeout(() => terminalInputRef.current?.focus(), 20) }}><Plus size={14} /></TipButton><TipButton label="Kill terminal" onClick={() => setTerminalLines([])}><Trash2 size={13} /></TipButton><TipButton label="Maximize panel" onClick={() => setPanelHeight((height) => height > 400 ? 225 : Math.round(window.innerHeight * .62))}><Maximize2 size={13} /></TipButton><TipButton label="Close panel" onClick={() => setPanelOpen(false)}><X size={14} /></TipButton></div>
+                <nav>{['PROBLEMS', 'OUTPUT', 'DEBUG CONSOLE', 'TERMINAL'].map((tab) => <button key={tab} className={panelTab === tab ? 'active' : ''} onClick={() => setPanelTab(tab)}>{tab}{tab === 'PROBLEMS' && <span className="tab-count">{problems.length}</span>}</button>)}</nav>
+                <div><span className="terminal-name"><TerminalSquare size={13} /> {window.tungsten ? 'pty' : 'sandbox'} <ChevronDown size={11} /></span><TipButton label="New terminal" onClick={() => { setPanelTab('TERMINAL'); if (window.tungsten && workspaceRoot) setTerminalSessionKey((key) => key + 1); else setTerminalLines((lines) => [...lines, { text: '— new terminal session —', kind: 'muted' }]); window.setTimeout(() => terminalInputRef.current?.focus(), 20) }}><Plus size={14} /></TipButton><TipButton label="Restart terminal" onClick={() => { if (window.tungsten && workspaceRoot) setTerminalSessionKey((key) => key + 1); else setTerminalLines([]) }}><Trash2 size={13} /></TipButton><TipButton label="Maximize panel" onClick={() => setPanelHeight((height) => height > 400 ? 225 : Math.round(window.innerHeight * .62))}><Maximize2 size={13} /></TipButton><TipButton label="Close panel" onClick={() => setPanelOpen(false)}><X size={14} /></TipButton></div>
               </header>
               {panelContent()}
             </section>}
@@ -1042,14 +1408,15 @@ export default function App() {
           <button title="Open a remote window" className="remote-status"><SquareCode size={13} /></button>
           <button title="Current branch" onClick={() => { setActivity('source'); setSidebarVisible(true); void refreshGit() }}><GitBranch size={13} /><span>{gitInfo.branch || 'main'}{sourceChanges.length ? '*' : ''}</span></button>
           <button title="Refresh source control" onClick={refreshGit}><RefreshCw size={11} /><span>{sourceChanges.length}</span></button>
-          <button title="No errors or warnings"><X size={12} /><span>0</span><CircleAlert size={12} /><span>0</span></button>
+          <button title={`${problems.length} language diagnostics`} onClick={() => { setPanelOpen(true); setPanelTab('PROBLEMS') }}><X size={12} /><span>{problems.filter((problem) => problem.severity === 1).length}</span><CircleAlert size={12} /><span>{problems.filter((problem) => problem.severity !== 1).length}</span></button>
         </div>
         <div>
           <button title={workspaceRoot || 'Tungsten demo workspace'}><Radio size={11} /><span>{workspaceName}</span></button>
           <button title={window.tungsten ? `Desktop app · ${window.tungsten.platform}` : 'Browser workspace'}><Box size={11} /><span>{window.tungsten ? 'Desktop' : 'Web'}</span></button>
           {activePath !== PREVIEW_PATH && <><button title="Go to line">Ln {cursor.line}, Col {cursor.column}</button><button>Spaces: 2</button><button>UTF-8</button><button>LF</button><button>{activeFile?.language || 'Plain Text'}</button></>}
           <button title="Formatter"><CircleCheck size={12} /><span>Prettier</span></button>
-          <button title="Tungsten engine"><Zap size={12} /><span>Ready</span></button>
+          <button title={lspState.message} className={lspState.running ? 'service-running' : ''}><Zap size={12} /><span>{lspState.running ? `${lspState.language} LSP` : 'Syntax'}</span></button>
+          <button title={updateState} onClick={() => { if (updateState === 'Restart to update') void window.tungsten?.installUpdate(); else void window.tungsten?.checkForUpdates() }}><Download size={12} /><span>{updateState}</span></button>
           <button title="Notifications"><Bell size={13} /></button>
         </div>
       </footer>
@@ -1064,6 +1431,26 @@ export default function App() {
           </div>
           <footer><span><kbd>↑↓</kbd> navigate</span><span><kbd>↵</kbd> select</span><span><kbd>esc</kbd> close</span></footer>
         </div>
+      </div>}
+
+      {projectModal && <div className="overlay" onMouseDown={() => setProjectModal(false)}>
+        <section className="project-modal" onMouseDown={(event) => event.stopPropagation()}>
+          <header><span className="modal-icon"><Rocket size={18} /></span><div><h2>Forge a new project</h2><p>Start with a clean, portable foundation.</p></div><button onClick={() => setProjectModal(false)}><X size={16} /></button></header>
+          <div className="project-form">
+            <label>PROJECT NAME<input value={projectName} onChange={(event) => setProjectName(event.target.value)} /></label>
+            <span className="field-label">TEMPLATE</span>
+            <div className="template-grid">
+              {[
+                ['web', 'Web app', 'HTML, CSS and JavaScript', '<>'],
+                ['node', 'Node.js', 'Modern ESM application', 'JS'],
+                ['python', 'Python', 'Package with pytest', 'PY'],
+                ['rust', 'Rust', 'Cargo binary crate', 'RS'],
+                ['go', 'Go', 'Go module and main package', 'GO'],
+              ].map(([id, name, detail, icon]) => <button key={id} className={projectTemplate === id ? 'active' : ''} onClick={() => setProjectTemplate(id)}><span>{icon}</span><div><strong>{name}</strong><small>{detail}</small></div>{projectTemplate === id && <Check size={14} />}</button>)}
+            </div>
+          </div>
+          <footer><button onClick={() => setProjectModal(false)}>Cancel</button><button className="primary" disabled={!projectName.trim()} onClick={() => { void createProjectFromTemplate() }}><Rocket size={13} /> Create project</button></footer>
+        </section>
       </div>}
 
       {settingsOpen && <div className="overlay" onMouseDown={() => setSettingsOpen(false)}>

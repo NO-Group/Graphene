@@ -307,6 +307,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 1px
 .search-results p { margin: 2px 0 0 21px; font: 10px/1.4 'JetBrains Mono', monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #7e857e; }
 
 /* Source control */
+.branch-switcher { height: 28px; margin: 0 9px 7px; padding: 0 7px; display: flex; align-items: center; gap: 6px; background: #101210; border: 1px solid #383d38; border-radius: 3px; color: #829b56; }
+.branch-switcher select { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: #bfc5bf; font-size: 10px; }
 .commit-box { padding: 0 9px 9px; }
 .commit-box textarea { width: 100%; height: 49px; resize: none; background: #101210; border: 1px solid #3b403b; color: #d7dbd7; border-radius: 3px 3px 0 0; padding: 7px; outline: 0; font-size: 11px; display: block; }
 .commit-box textarea:focus { border-color: #819b4d; }
@@ -314,20 +316,58 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 1px
 .commit-box button:disabled { background: #343934; color: #777e77; }
 .count-pill { flex: 0 0 auto !important; min-width: 15px; height: 15px; border-radius: 8px; background: #383d38; display: grid; place-items: center; font: 9px 'JetBrains Mono', monospace; }
 .sidebar-empty { height: 120px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 9px; color: #656c66; font-size: 11px; }
-.change-row { width: 100%; height: 25px; border: 0; padding: 0 9px 0 19px; background: transparent; display: flex; align-items: center; gap: 4px; font-size: 11px; color: #b7bdb7; }
+.change-row { width: 100%; height: 27px; padding: 0 7px 0 16px; background: transparent; display: grid; grid-template-columns: minmax(0, 1fr) 20px 18px; align-items: center; gap: 2px; font-size: 11px; color: #b7bdb7; }
 .change-row:hover { background: #232623; }
-.change-row small { color: #656c66; overflow: hidden; text-overflow: ellipsis; }
-.change-row b { margin-left: auto; color: #d8ad55; font: 10px 'JetBrains Mono', monospace; }
+.change-main { min-width: 0; height: 26px; padding: 0; border: 0; background: transparent; display: flex; align-items: center; gap: 4px; color: inherit; text-align: left; }
+.change-main > span:not(.file-glyph) { white-space: nowrap; }
+.change-row small { color: #656c66; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.change-row b { color: #d8ad55; font: 10px 'JetBrains Mono', monospace; text-align: right; }
+.stage-button { width: 20px; height: 20px; border: 0; background: transparent; color: #858c85; display: grid; place-items: center; border-radius: 2px; opacity: 0; }
+.change-row:hover .stage-button { opacity: 1; }
+.stage-button:hover { background: #3d4633; color: var(--accent); }
 
 /* Extensions */
 .extension-card { padding: 8px 10px; display: grid; grid-template-columns: 34px minmax(0, 1fr) 14px; gap: 8px; border-bottom: 1px solid #242824; }
 .extension-card:hover { background: #202420; }
 .extension-icon { width: 34px; height: 34px; border-radius: 7px; display: grid; place-items: center; color: #101210; font-weight: 700; }
-.ext-l { background: #9ac654; }.ext-p { background: #d3b579; }.ext-e { background: #8a78cf; }.ext-g { background: #d07057; }
+.ext-l { background: #9ac654; }.ext-p { background: #d3b579; }.ext-e { background: #8a78cf; }.ext-g { background: #d07057; }.ext-d { background: #69a9c4; }
 .extension-card strong { font-size: 11px; font-weight: 600; color: #d3d8d3; display: block; }
 .extension-card p { font-size: 9px; color: #737a73; margin: 2px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .extension-card span { font-size: 9px; color: #8caa53; }
 .extension-card > svg { color: #6c736c; }
+.extension-install-banner { margin: 4px 9px 9px; padding: 9px; display: grid; grid-template-columns: 22px 1fr; gap: 7px; background: #20251d; border: 1px solid #35402c; border-radius: 3px; }
+.extension-install-banner > svg { color: var(--accent); }
+.extension-install-banner strong { font-size: 10px; color: #d4d9d4; }
+.extension-install-banner p { margin: 2px 0 7px; font-size: 9px; line-height: 1.35; color: #777f78; }
+.extension-install-banner button { grid-column: 2; justify-self: start; border: 1px solid #506139; background: #344029; color: #bdda83; border-radius: 2px; font-size: 9px; padding: 3px 8px; }
+
+.debug-launch { padding: 1px 9px 10px; }
+.debug-launch > button { width: 100%; height: 31px; border: 1px solid #779445; background: #658633; color: #f5f8f3; display: grid; grid-template-columns: 20px 1fr max-content; align-items: center; gap: 5px; padding: 0 8px; border-radius: 3px; font-size: 10px; text-align: left; }
+.debug-launch > button.stop { background: #713f3c; border-color: #8d514c; }
+.debug-launch kbd { font-size: 8px; opacity: .7; }
+.debug-launch p { margin: 7px 2px 0; color: #6f776f; font-size: 9px; line-height: 1.4; }
+.debug-controls { height: 30px; margin: -3px 9px 9px; padding: 0 5px; display: flex; align-items: center; gap: 2px; background: #101210; border: 1px solid #353b35; border-radius: 3px; }
+.debug-controls button { width: 24px; height: 23px; border: 0; background: transparent; color: #a2aa9f; display: grid; place-items: center; border-radius: 2px; }
+.debug-controls button:hover { background: #2b3227; color: var(--accent); }
+.debug-controls span { margin-left: auto; color: #626a63; font: 7px 'JetBrains Mono', monospace; letter-spacing: .08em; }
+.breakpoint-list { padding: 4px 0 8px; }
+.breakpoint-list > p { margin: 8px 20px; color: #626a63; font-size: 9px; }
+.breakpoint-list button { width: 100%; height: 24px; border: 0; background: transparent; padding: 0 8px 0 20px; display: flex; align-items: center; gap: 5px; color: #aeb5ae; font-size: 10px; }
+.breakpoint-list button:hover { background: #242824; }
+.breakpoint-list small { margin-left: auto; color: #656d66; }
+.breakpoint-list svg { color: #666e67; }
+.breakpoint-dot { width: 7px; height: 7px; border-radius: 50%; background: #d66059; box-shadow: 0 0 0 2px #d6605925; }
+.debug-sidebar-output { max-height: 140px; overflow: auto; padding: 6px 11px; font: 9px/1.45 'JetBrains Mono', monospace; color: #7f877f; user-select: text; }
+.debug-sidebar-output p { margin: 0 0 5px; white-space: pre-wrap; }
+.framework-tags { min-height: 34px; padding: 5px 9px 9px; display: flex; gap: 4px; flex-wrap: wrap; }
+.framework-tags span { height: 19px; padding: 0 7px; border: 1px solid #3e4933; background: #293023; color: #9db775; display: inline-flex; align-items: center; border-radius: 10px; font-size: 8px; }
+.task-list { padding: 4px 0 8px; }
+.task-list > button { width: 100%; min-height: 37px; border: 0; background: transparent; padding: 4px 10px 4px 17px; display: grid; grid-template-columns: 19px minmax(0, 1fr) 14px; align-items: center; gap: 5px; text-align: left; color: #858d86; }
+.task-list > button:hover { background: #242824; color: var(--accent); }
+.task-list > button > span { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.task-list strong { font-size: 10px; font-weight: 500; color: #c0c6c0; }
+.task-list small { font: 8px 'JetBrains Mono', monospace; color: #666e67; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sidebar-empty.compact { height: 74px; }
 
 /* Editor */
 .main-stage { min-width: 0; min-height: 0; flex: 1; display: flex; flex-direction: column; background: var(--bg); }
@@ -413,6 +453,11 @@ kbd { font-family: 'JetBrains Mono', monospace; }
 .panel-header > div { display: flex; align-items: center; gap: 2px; }
 .terminal-name { display: flex; align-items: center; gap: 5px; color: #979e97; font-size: 10px; padding: 0 7px; }
 .terminal { min-height: 0; position: relative; background: #0e100e; font: 11px/1.55 'JetBrains Mono', 'SFMono-Regular', Consolas, monospace; user-select: text; }
+.desktop-terminal { width: 100%; height: 100%; min-height: 0; padding: 7px 8px 4px 11px; background: #0e100e; user-select: text; overflow: hidden; }
+.desktop-terminal .xterm { height: 100%; }
+.desktop-terminal .xterm-viewport { scrollbar-color: #414641 transparent; }
+.debug-console-output { min-height: 0; overflow: auto; background: #0e100e; padding: 7px 11px; color: #b8beb8; font: 10px/1.55 'JetBrains Mono', monospace; white-space: pre-wrap; user-select: text; }
+.debug-console-output > .empty-panel { height: 100%; }
 .terminal-scroll { position: absolute; inset: 0; overflow: auto; padding: 7px 11px 18px; }
 .terminal-line { color: #bdc3bd; white-space: pre-wrap; min-height: 17px; }
 .terminal-line.muted { color: #6d756e; }
@@ -423,6 +468,12 @@ kbd { font-family: 'JetBrains Mono', monospace; }
 .terminal-prompt { min-height: 20px; display: flex; align-items: center; gap: 5px; color: #cbd0cb; }
 .prompt-user { color: #a9ca68; }.prompt-path { color: #6bb7ba; }
 .terminal-prompt input { flex: 1; min-width: 100px; height: 20px; padding: 0; border: 0; outline: 0; background: transparent; color: #e3e6e3; font: inherit; }
+.problems-list { min-height: 0; overflow: auto; background: #0e100e; padding: 4px 0; }
+.problems-list button { width: 100%; min-height: 25px; border: 0; background: transparent; padding: 3px 11px; display: grid; grid-template-columns: 18px minmax(0, 1fr) max-content; align-items: center; gap: 5px; color: #b9bfb9; text-align: left; font-size: 10px; }
+.problems-list button:hover { background: #202420; }
+.problems-list button svg.error { color: #db716b; }
+.problems-list button svg.warning { color: #d5ad61; }
+.problems-list small { color: #656d66; font: 8px 'JetBrains Mono', monospace; }
 .empty-panel { min-height: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; color: #5e655f; font-size: 10px; }
 .empty-panel svg { color: #718153; margin-bottom: 4px; }.empty-panel strong { color: #9da49d; font-weight: 500; }.empty-panel span { color: #5d645d; }
 .output-panel { padding: 10px 13px; background: #0e100e; color: #969d96; font: 11px/1.65 'JetBrains Mono', monospace; user-select: text; }
@@ -433,6 +484,7 @@ kbd { font-family: 'JetBrains Mono', monospace; }
 .statusbar > div { display: flex; min-width: 0; }
 .statusbar button { border: 0; background: transparent; color: inherit; height: 22px; padding: 0 5px; display: flex; align-items: center; gap: 3px; font-size: 9px; white-space: nowrap; }
 .statusbar button:hover { background: #353b35; color: white; }
+.statusbar button.service-running { color: #c8f169; }
 .statusbar .remote-status { width: 45px; justify-content: center; background: #789c36; color: #fff; clip-path: polygon(0 0, 100% 0, 88% 100%, 0 100%); margin-right: 2px; }
 .statusbar > div:last-child { overflow: hidden; justify-content: flex-end; }
 .statusbar > div:last-child button { flex: 0 0 auto; }
@@ -460,6 +512,31 @@ kbd { font-family: 'JetBrains Mono', monospace; }
 .command-palette > footer { height: 26px; border-top: 1px solid #2a2e2a; display: flex; align-items: center; justify-content: flex-end; gap: 15px; padding: 0 9px; font-size: 9px; color: #676e67; }
 .command-palette > footer kbd { color: #9fa69f; }
 .no-results { padding: 35px; text-align: center; color: #6d746d; font-size: 11px; }
+
+/* Project templates */
+.project-modal { width: min(620px, calc(100vw - 40px)); max-height: calc(100vh - 30px); background: #1c1f1c; border: 1px solid #414741; border-radius: 5px; box-shadow: 0 25px 80px #000c; overflow: hidden; display: flex; flex-direction: column; }
+.project-modal > header { min-height: 71px; padding: 0 17px; border-bottom: 1px solid #303530; display: grid; grid-template-columns: 36px 1fr 28px; align-items: center; gap: 11px; }
+.project-modal h2 { margin: 0; color: #e6eae6; font-size: 14px; font-weight: 600; }
+.project-modal header p { margin: 3px 0 0; color: #747b74; font-size: 10px; }
+.project-modal header > button { width: 28px; height: 28px; border: 0; background: transparent; color: #818881; display: grid; place-items: center; border-radius: 3px; }
+.project-form { min-height: 0; overflow-y: auto; padding: 17px; }
+.project-form > label { display: flex; flex-direction: column; gap: 6px; color: #777e77; font-size: 8px; letter-spacing: .1em; }
+.project-form input { width: 100%; height: 34px; border: 1px solid #424842; background: #101210; color: #dfe3df; padding: 0 9px; font: 11px 'JetBrains Mono', monospace; border-radius: 3px; outline: 0; }
+.project-form input:focus { border-color: #7e9f47; }
+.field-label { display: block; margin: 16px 0 7px; color: #777e77; font-size: 8px; letter-spacing: .1em; }
+.template-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.template-grid > button { min-height: 58px; border: 1px solid #363c36; background: #181b18; display: grid; grid-template-columns: 34px 1fr 16px; align-items: center; gap: 8px; text-align: left; padding: 8px; color: #858c85; border-radius: 3px; }
+.template-grid > button:hover { background: #202520; border-color: #4b534b; }
+.template-grid > button.active { background: #293122; border-color: #69873d; }
+.template-grid > button > span { width: 32px; height: 32px; display: grid; place-items: center; background: #252a25; color: var(--accent); font: 600 9px 'JetBrains Mono', monospace; border-radius: 3px; }
+.template-grid > button > div { display: flex; flex-direction: column; gap: 3px; }
+.template-grid strong { color: #d4d9d4; font-size: 10px; font-weight: 500; }
+.template-grid small { color: #6f776f; font-size: 8px; }
+.template-grid > button > svg { color: var(--accent); }
+.project-modal > footer { min-height: 54px; padding: 0 17px; display: flex; align-items: center; justify-content: flex-end; gap: 7px; background: #181b18; border-top: 1px solid #2b302b; }
+.project-modal > footer button { min-height: 28px; border: 1px solid #3b413b; background: #252925; padding: 0 12px; border-radius: 3px; color: #aeb4ae; font-size: 10px; display: flex; align-items: center; gap: 5px; }
+.project-modal > footer button.primary { background: #82a844; border-color: #8db34e; color: #101210; font-weight: 600; }
+.project-modal > footer button:disabled { opacity: .4; }
 
 /* Settings */
 .settings-modal { width: min(520px, calc(100vw - 40px)); max-height: calc(100vh - 30px); background: #1c1f1c; display: flex; flex-direction: column; border: 1px solid #414741; border-radius: 5px; box-shadow: 0 25px 80px #000c; overflow: hidden; }

@@ -1,47 +1,75 @@
 # Tungsten IDE
 
-A rugged, cross-platform development environment built with Electron, React, and Monaco. Tungsten runs as a native desktop application on Windows, macOS, and Linux while retaining a browser workspace for development and demonstrations.
+A rugged, cross-platform development environment built with Electron, React, Monaco, and xterm. Tungsten runs on Windows, macOS, and Linux while retaining a browser workspace for development and demonstrations.
 
 <img src="resources/icon.png" alt="Tungsten IDE icon" width="120" />
 
-## Features
+## Tungsten 1.0
 
-### Editing
+### Professional editing
 
-- Monaco editor bundled locally for offline language services and syntax highlighting
-- Multi-file tabs, minimap, bracket guides, sticky scope scrolling, visible whitespace, word wrap, and autosave
-- Built-in formatting, quick file navigation, workspace search, symbols outline, command palette, and keyboard shortcuts
+- Monaco editor bundled locally for offline syntax highlighting and core language services
+- Multi-file tabs, minimap, bracket guides, sticky scopes, visible whitespace, word wrap, formatting, and autosave
+- Quick-open, workspace search, symbol outline, command palette, keyboard shortcuts, and resizable panels
 - Side-by-side live preview for HTML, CSS, and JavaScript projects
 - Create, rename, delete, reveal, and refresh files from the explorer
 
-### Desktop workspace
+### Language intelligence
 
-- Open real folders and restore the most recently used workspace on launch
-- Safely read and write local files through a narrow Electron preload bridge
-- Run real project commands in the selected workspace
-- Refresh files changed by other applications without restarting Tungsten
-- Native Git status, branch information, changed-file list, staging, and commits
+Tungsten recognizes more than 40 languages and formats. A generic Language Server Protocol bridge supplies completion, hover documentation, and diagnostics.
 
-### Language support
+- The TypeScript language server is bundled for JavaScript and TypeScript
+- Python, Rust, Go, C/C++, Java, C#, Ruby, PHP, Kotlin, and Lua servers are discovered from the computer's `PATH`
+- Editing and syntax highlighting continue normally when an optional server is not installed
 
-Tungsten recognizes and highlights more than 40 languages and formats, including:
+See [Language servers](docs/LANGUAGE_SERVERS.md) for server names and setup.
 
-- JavaScript, TypeScript, Python, Rust, Go, Java, C, C++, and C#
-- PHP, Ruby, Kotlin, Swift, Dart, Lua, Shell, PowerShell, and SQL
-- HTML, CSS, Sass, Less, JSON, YAML, XML, Markdown, and GraphQL
-- Dockerfile, Terraform/HCL, Elixir, F#, Scala, R, Perl, Julia, and Solidity
-- Clojure, Pascal, Objective-C, Handlebars, Vue, Svelte, and more
+### Native terminal
 
-Language-specific compilers, formatters, and runtime tools can be called through the native terminal when installed on the computer.
+- PTY-backed shell using xterm with full ANSI color and interactive applications
+- Native PowerShell/cmd compatibility on Windows and login shells on macOS/Linux
+- Terminal resizing, command history, process interruption, scrolling, task execution, and session restart
+- Sandboxed command emulator remains available in the browser build
 
-### Security
+### Debugging
 
-- Electron renderer sandbox and context isolation
-- Node integration disabled in the renderer
-- Path traversal and symbolic-link write protection
-- Size and file-count limits for workspace indexing
-- Sandboxed live-preview iframe
-- Minimal, typed IPC surface
+- Debug Adapter Protocol transport over standard input/output
+- Adapter initialization, launch, configuration, output, pause, stop, and lifecycle handling
+- Breakpoint management and debug console views
+- Project-defined `.tungsten/launch.json` configurations
+
+See [Debugging](docs/DEBUGGING.md) for an example configuration. Language-specific debug adapters are intentionally installed separately.
+
+### Git
+
+- Live branch and working-tree status
+- Changed-file list, visual diff buffers, per-file staging, and commits
+- Backend support for unstaging, branch listing, and checkout
+- All Git commands run against the selected local workspace
+
+### Projects, tasks, and tests
+
+- New-project templates for web, Node.js, Python, Rust, and Go
+- Automatic project detection for npm, pytest, Cargo, Go, Maven, and Gradle
+- Test Explorer and task runner integrated with the native terminal
+- Custom `.tungsten/tasks.json` tasks
+- Most-recent workspace restoration
+
+### Extensions
+
+- Install local extension folders from the Extensions sidebar
+- Per-user and workspace-local extension discovery
+- Declarative command, theme, and language contributions without arbitrary renderer execution
+
+See the [extension manifest guide](docs/EXTENSIONS.md).
+
+### Reliability and distribution
+
+- Timed crash-recovery snapshots with restore prompts
+- Electron renderer sandbox, context isolation, path validation, symbolic-link protection, and isolated previews
+- Automatic update checks in packaged builds through `electron-updater`
+- Windows NSIS/portable, macOS DMG/ZIP, and Linux AppImage/DEB targets
+- Cross-platform GitHub Actions builds, optional signing/notarization secrets, release assets, and generated release notes
 
 ## Run the desktop app
 
@@ -50,7 +78,7 @@ npm install
 npm run desktop:dev
 ```
 
-The desktop development command launches Vite and Electron together. A graphical desktop session is required.
+A graphical desktop session is required.
 
 ## Build installers
 
@@ -58,15 +86,9 @@ The desktop development command launches Vite and Electron together. A graphical
 npm run desktop:dist
 ```
 
-Installers are written to `out/`:
+Installers are written to `out/`. Build locally on the target operating system, or run the included `Build desktop installers` GitHub Actions workflow. For signed releases, configure the signing secrets documented in the workflow and push a version tag such as `v1.0.0`.
 
-- **Windows:** NSIS installer and portable executable
-- **macOS:** DMG and ZIP
-- **Linux:** AppImage and Debian package
-
-Installers should be built on their target operating system. The included [GitHub Actions workflow](.github/workflows/desktop-build.yml) builds all platforms from a manually triggered workflow or version tag.
-
-For an unpacked build on the current platform:
+Create an unpacked application for the current platform with:
 
 ```bash
 npm run desktop:pack
@@ -78,12 +100,12 @@ npm run desktop:pack
 npm run dev
 ```
 
-The Vite server binds to `0.0.0.0` for hosted development environments. Native filesystem, Git, and process access remain available only inside the desktop application.
+The Vite server binds to `0.0.0.0`. Native filesystem, PTY, Git, LSP, DAP, extension installation, and updater access remain available only inside Electron.
 
 ## Quality checks
 
 ```bash
-npm run build
-npm run lint
-npm audit
+npm run check
 ```
+
+This runs ESLint, unit tests, TypeScript, and the production Vite build. Dependency security can be checked with `npm audit`.
