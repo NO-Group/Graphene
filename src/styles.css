@@ -745,6 +745,40 @@ kbd { font-family: 'JetBrains Mono', monospace; }
 @keyframes tungsten-spin { to { transform: rotate(360deg); } }
 .collaboration-cursor::before { content: ''; display: inline-block; width: 2px; height: 1.25em; margin-left: -1px; vertical-align: text-bottom; background: #d2ff72; box-shadow: 0 0 5px #d2ff72aa; }
 
+.git-operation-card { margin: 7px; padding: 8px; display: grid; gap: 6px; border: 1px solid #6d5632; background: #262015; }
+.git-operation-card > strong { color: #e5bc76; font-size: 9px; letter-spacing: .6px; }
+.git-operation-card > span { color: #a89e8b; font-size: 9px; }
+.git-operation-card > button { min-width: 0; height: 25px; padding: 0 5px; border: 0; border-top: 1px solid #403722; background: transparent; color: #c8c0b1; display: flex; align-items: center; gap: 5px; text-align: left; }
+.git-operation-card > button span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 9px 'JetBrains Mono', monospace; }
+.git-operation-card > div { display: flex; gap: 5px; }
+.git-operation-card > div button, .git-integrate button { height: 24px; border: 1px solid #484039; background: #302a24; color: #c9c1b7; font-size: 8px; display: flex; align-items: center; gap: 3px; }
+.git-operation-card > div button:disabled { opacity: .4; }
+.git-integrate { margin: 6px 7px; display: grid; grid-template-columns: 1fr auto auto; gap: 4px; }
+.git-integrate select { min-width: 0; height: 25px; border: 1px solid #343934; background: #171a17; color: #adb4ad; font-size: 9px; }
+.git-integrate button { padding: 0 6px; background: #222722; border-color: #3b423b; }
+
+.keybindings-modal { width: min(640px, calc(100vw - 50px)); max-height: min(740px, calc(100vh - 45px)); background: #181b18; border: 1px solid #3b413b; box-shadow: 0 25px 80px #000c; display: flex; flex-direction: column; }
+.keybindings-modal > header { height: 67px; padding: 0 16px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #2d322d; }
+.keybindings-modal > header > div { display: flex; align-items: center; gap: 10px; }
+.keybindings-modal h2 { margin: 0; color: #e0e4e0; font-size: 14px; }
+.keybindings-modal p { margin: 3px 0 0; color: #7f877f; font-size: 9px; }
+.keybindings-modal header > button { border: 0; background: transparent; color: #899089; }
+.keybindings-list { overflow: auto; padding: 8px 16px; display: grid; }
+.keybindings-list label { height: 39px; display: grid; grid-template-columns: 1fr 190px; align-items: center; gap: 14px; border-bottom: 1px solid #252925; color: #b8beb8; font-size: 10px; }
+.keybindings-list input { height: 25px; padding: 0 8px; border: 1px solid #373d37; background: #111411; color: #d2ff72; text-align: center; font: 9px 'JetBrains Mono', monospace; outline: 0; }
+.keybindings-list input:focus { border-color: #91a955; box-shadow: 0 0 0 1px #91a95555; }
+.keybindings-modal > footer { height: 51px; padding: 0 16px; border-top: 1px solid #2d322d; display: flex; align-items: center; justify-content: flex-end; gap: 7px; }
+.keybindings-modal > footer button { height: 27px; border: 1px solid #3c423c; background: #252925; color: #b8beb8; font-size: 9px; }
+.keybindings-modal > footer .primary { background: #b8df65; border-color: #b8df65; color: #151812; }
+
+.debug-inline-value { margin-left: 20px; color: #9ebd6d !important; font-style: italic; opacity: .82; }
+.extension-card.managed { align-items: flex-start; }
+.extension-card.managed.disabled { opacity: .58; }
+.extension-card.managed small { display: block; margin-top: 4px; color: #677067; font-size: 8px; }
+.extension-actions { display: flex; gap: 3px; }
+.extension-actions button { width: 23px; height: 23px; border: 1px solid #353b35; background: #1b1f1b; color: #8f978f; display: grid; place-items: center; }
+.extension-actions button:hover { color: #d2ff72; border-color: #59664a; }
+
 /* Scrollbars */
 * { scrollbar-width: thin; scrollbar-color: #414641 transparent; }
 ::-webkit-scrollbar { width: 9px; height: 9px; }

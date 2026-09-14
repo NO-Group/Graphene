@@ -47,6 +47,10 @@ contextBridge.exposeInMainWorld('tungsten', {
   gitStashPush: (message) => ipcRenderer.invoke('desktop:git-stash-push', message),
   gitStashPop: (reference) => ipcRenderer.invoke('desktop:git-stash-pop', reference),
   gitIntegrate: (operation, branch) => ipcRenderer.invoke('desktop:git-integrate', operation, branch),
+  gitOperationStatus: () => ipcRenderer.invoke('desktop:git-operation-status'),
+  gitConflictVersions: (path) => ipcRenderer.invoke('desktop:git-conflict-versions', path),
+  gitResolveConflict: (path, resolution) => ipcRenderer.invoke('desktop:git-resolve-conflict', path, resolution),
+  gitOperationAction: (operation, action) => ipcRenderer.invoke('desktop:git-operation-action', operation, action),
   githubItems: () => ipcRenderer.invoke('desktop:github-items'),
 
   createTerminal: (columns, rows, profile) => ipcRenderer.invoke('terminal:create', columns, rows, profile),
@@ -78,6 +82,8 @@ contextBridge.exposeInMainWorld('tungsten', {
   createProject: (template, name) => ipcRenderer.invoke('project:create', template, name),
   scanExtensions: () => ipcRenderer.invoke('extensions:scan'),
   installExtensionFolder: () => ipcRenderer.invoke('extensions:install-folder'),
+  setExtensionEnabled: (extensionId, enabled) => ipcRenderer.invoke('extensions:set-enabled', extensionId, enabled),
+  uninstallExtension: (extensionId) => ipcRenderer.invoke('extensions:uninstall', extensionId),
   executeExtensionCommand: (command, args) => ipcRenderer.invoke('extensions:execute', command, args),
   onExtensionEvent: (callback) => subscribe('extensions:event', callback),
 

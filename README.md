@@ -1,21 +1,21 @@
-# Tungsten IDE 2.1
+# Tungsten IDE 2.2
 
 A rugged, installable development environment built with Electron, React, Monaco, xterm, Language Server Protocol, Debug Adapter Protocol, SSH, and Yjs. Tungsten targets Windows, macOS, and Linux while retaining a safe browser workspace for development and demonstrations.
 
 <img src="resources/icon.png" alt="Tungsten IDE icon" width="120" />
 
-## Tungsten 2.1 highlights
+## Tungsten 2.2 highlights
 
-- Fast shell startup: Monaco and xterm are loaded as separate, on-demand production chunks; the renderer entry is approximately 121 kB instead of the former 4.6 MB monolith
-- Persistent workbench dimensions and terminal layouts, terminal-buffer search, local/WSL/Docker profiles, splits, and dedicated task terminals
-- Safe local multi-root workspaces with persisted roots, aggregate watching/search, virtual root prefixes, and LSP `workspaceFolders` updates
-- Side-by-side Git worktree/index and index/HEAD comparison with whole-file and individual-hunk staging or unstaging
-- Structured individual test results with duration, failure details, snapshot output, and refreshed LCOV overlays
-- Live collaborator cursor presence alongside shared editing and review comments
+- Full merge and rebase controls with operation detection, conflict lists, three-stage conflict loading, side-by-side current/incoming review, resolution actions, continue, and abort
+- Remote LSP and DAP adapter processes over the active SSH transport, plus remote project detection, tasks, structured tests, commands, and LCOV loading
+- Editable, persistent keyboard shortcuts with collision handling and platform-aware labels
+- Inline DAP variable values beside the stopped source line
+- Managed extension lifecycle with persisted enable/disable state, user-package uninstall, scope visibility, permission display, and isolated host reactivation
+- The Tungsten 2.1 performance, multi-root, terminal, Git hunk, testing, and collaboration improvements remain included
 
-See the [Tungsten 2.1 release notes](docs/RELEASE_2.1.md) for architecture details and measured build output.
+See the [Tungsten 2.2 release notes](docs/RELEASE_2.2.md) and [2.1 performance notes](docs/RELEASE_2.1.md).
 
-## Tungsten 2.1 workstation
+## Tungsten 2.2 workstation
 
 ### Editing and workspace engine
 
@@ -23,7 +23,7 @@ See the [Tungsten 2.1 release notes](docs/RELEASE_2.1.md) for architecture detai
 - Native Chokidar workspace watching with external-change indication across persisted multi-root local workspaces
 - Ripgrep-backed asynchronous content search across every local root, with bounded in-process and remote fallbacks
 - Bounded, lazy folder rendering; ignored dependency/build trees; 2 MB per-file and 4,000-file desktop safety limits
-- Quick-open, symbol outline, command palette, dashboard, workspace profiles, settings, keybinding access, recovery snapshots, and responsive resizable panels
+- Quick-open, symbol outline, command palette, dashboard, workspace profiles, settings, editable persistent keybindings, recovery snapshots, and responsive resizable panels
 
 ### Language intelligence
 
@@ -38,7 +38,7 @@ See [Language servers](docs/LANGUAGE_SERVERS.md).
 ### Industrial terminals and debugging
 
 - Persistent PTY terminal tabs and layouts, split views, buffer search, per-tab restart, dedicated task terminals, WSL profiles, Docker profiles, and interactive SSH shells
-- DAP launch/configuration lifecycle with gutter breakpoints, conditional breakpoints, threads, call stacks, scopes, variables, watches, continue, pause, step-over, step-in, and step-out
+- DAP launch/configuration lifecycle with gutter breakpoints, conditional breakpoints, threads, call stacks, scopes, variables, inline stopped-line values, watches, continue, pause, step-over, step-in, and step-out
 - Project launch configurations under `.tungsten/launch.json`
 
 See [Debugging](docs/DEBUGGING.md).
@@ -54,7 +54,7 @@ See [Debugging](docs/DEBUGGING.md).
 ### Git and GitHub
 
 - Branch/worktree status, side-by-side diffs, line-hunk and whole-file staging/unstaging, commits, checkout, and conflict visibility
-- Commit graph/history, stash push/pop, blame buffers, and merge/rebase service APIs
+- Commit graph/history, stash push/pop, blame buffers, and complete merge/rebase workflows with conflict resolution, continue, and abort
 - GitHub pull-request and issue lists through the authenticated `gh` CLI
 
 ### Extension host
@@ -62,13 +62,13 @@ See [Debugging](docs/DEBUGGING.md).
 - Per-user and workspace package discovery
 - Declarative commands, themes, languages, keybindings, and sidebar metadata
 - Separate extension-host process for executable packages
-- Restricted VM API, activation/command timeouts, permission review, and SHA-256 entry-point verification
+- Restricted VM API, activation/command timeouts, permission review, SHA-256 entry-point verification, persisted enable/disable state, and managed uninstall
 
 See [extension packages](docs/EXTENSIONS.md).
 
 ### Remote development and collaboration
 
-- SFTP-backed SSH workspaces with safe file operations, indexed search, and remote terminals
+- SFTP-backed SSH workspaces with safe file operations, indexed search, remote terminals, project/task/test detection, LCOV, and SSH-hosted LSP/DAP processes
 - WSL distribution, Docker container, and Dev Container detection with dedicated terminal profiles
 - Yjs shared documents over token-protected WebSocket rooms
 - Visible collaborator cursors, presence, review comments, reconnection-ready room events, and voice-room signaling foundations

@@ -2,6 +2,8 @@
 
 Tungsten supports declarative contributions and integrity-verified executable extensions. Install a folder from the Extensions sidebar. Every package starts with `extension.json`.
 
+The Extensions view displays package scope, permissions, integrity state, and enabled state. Enable/disable choices persist across restarts and reactivate the isolated host. Per-user packages can be uninstalled after native confirmation; workspace-owned packages remain under repository control.
+
 ## Declarative package
 
 ```json
@@ -35,7 +37,7 @@ An executable extension declares its entry point, permissions, and SHA-256 integ
 {
   "id": "acme.runtime-tools",
   "name": "Runtime Tools",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "main": "extension.js",
   "integrity": "sha256-<hex digest of extension.js>",
   "permissions": ["commands"],

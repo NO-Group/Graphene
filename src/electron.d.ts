@@ -27,6 +27,8 @@ type ExtensionManifest = {
   permissions?: string[]
   entry?: string
   verification?: 'verified' | 'unsigned' | 'declarative'
+  enabled?: boolean
+  scope?: 'user' | 'workspace'
   location: string
 }
 type Unsubscribe = () => void
@@ -69,6 +71,10 @@ interface Window {
     gitStashPush: (message?: string) => Promise<GitStatusResult>
     gitStashPop: (reference: string) => Promise<GitStatusResult>
     gitIntegrate: (operation: 'merge' | 'rebase', branch: string) => Promise<GitStatusResult>
+    gitOperationStatus: () => Promise<{ operation: 'merge' | 'rebase' | null; conflicts: string[] }>
+    gitConflictVersions: (path: string) => Promise<{ path: string; base: string; ours: string; theirs: string }>
+    gitResolveConflict: (path: string, resolution: 'ours' | 'theirs' | 'both' | 'mark') => Promise<GitStatusResult>
+    gitOperationAction: (operation: 'merge' | 'rebase', action: 'continue' | 'abort') => Promise<GitStatusResult>
     githubItems: () => Promise<{ pullRequests: Array<{ number: number; title: string; state: string; url: string }>; issues: Array<{ number: number; title: string; state: string; url: string }> }>
 
     createTerminal: (columns: number, rows: number, profile?: { kind: 'wsl' | 'container'; id: string }) => Promise<{ id: string }>
@@ -100,6 +106,8 @@ interface Window {
     createProject: (template: string, name: string) => Promise<DesktopWorkspaceResult>
     scanExtensions: () => Promise<ExtensionManifest[]>
     installExtensionFolder: () => Promise<{ canceled: boolean; extensions: ExtensionManifest[] }>
+    setExtensionEnabled: (extensionId: string, enabled: boolean) => Promise<ExtensionManifest[]>
+    uninstallExtension: (extensionId: string) => Promise<ExtensionManifest[]>
     executeExtensionCommand: (command: string, args?: unknown[]) => Promise<unknown>
     onExtensionEvent: (callback: (payload: { type: string; id?: string; extensionId?: string; message?: string }) => void) => Unsubscribe
 

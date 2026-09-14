@@ -36,6 +36,7 @@ import {
   GitCompareArrows,
   GitPullRequest,
   Hammer,
+  Keyboard,
   Layers,
   ListChecks,
   Maximize2,
@@ -109,6 +110,13 @@ const WORKSPACE_KEY = 'tungsten.workspace.v1'
 const SETTINGS_KEY = 'tungsten.settings.v1'
 const TERMINAL_LAYOUT_KEY = 'tungsten.terminals.v2'
 const WORKBENCH_LAYOUT_KEY = 'tungsten.workbench.v2'
+const KEYBINDINGS_KEY = 'tungsten.keybindings.v1'
+const defaultKeybindings: Record<string, string> = {
+  commandPalette: 'mod+shift+p', quickOpen: 'mod+p', refreshWorkspace: 'mod+shift+r', openFolder: 'mod+o', save: 'mod+s', toggleSidebar: 'mod+b', togglePanel: 'mod+j', runProject: 'mod+enter', toggleTerminal: 'mod+`', formatDocument: 'alt+shift+f', settings: 'mod+,', debug: 'f5',
+}
+const keybindingLabels: Record<string, string> = {
+  commandPalette: 'Show Command Palette', quickOpen: 'Quick Open File', refreshWorkspace: 'Refresh Workspace', openFolder: 'Open Folder', save: 'Save Active File', toggleSidebar: 'Toggle Primary Side Bar', togglePanel: 'Toggle Bottom Panel', runProject: 'Run Project', toggleTerminal: 'Toggle Terminal', formatDocument: 'Format Document', settings: 'Open Settings', debug: 'Start or Stop Debugging',
+}
 const PREVIEW_PATH = '$preview'
 const lspLanguages = new Set(['javascript', 'typescript', 'python', 'rust', 'go', 'c', 'cpp', 'java', 'csharp', 'ruby', 'php', 'kotlin', 'lua'])
 const openedLspDocuments = new Set<string>()
@@ -321,6 +329,26 @@ function loadWorkbenchLayout() {
   catch { return {} }
 }
 
+function loadKeybindings() {
+  try { return { ...defaultKeybindings, ...JSON.parse(localStorage.getItem(KEYBINDINGS_KEY) || '{}') } as Record<string, string> }
+  catch { return { ...defaultKeybindings } }
+}
+
+function shortcutFromEvent(event: KeyboardEvent | React.KeyboardEvent) {
+  const key = event.key.toLowerCase() === ' ' ? 'space' : event.key.toLowerCase()
+  if (['control', 'meta', 'alt', 'shift'].includes(key)) return ''
+  const parts: string[] = []
+  if (event.ctrlKey || event.metaKey) parts.push('mod')
+  if (event.altKey) parts.push('alt')
+  if (event.shiftKey) parts.push('shift')
+  parts.push(key)
+  return parts.join('+')
+}
+
+function formatShortcut(shortcut: string) {
+  return shortcut.split('+').map((part) => ({ mod: navigator.platform.includes('Mac') ? '⌘' : 'Ctrl', alt: navigator.platform.includes('Mac') ? '⌥' : 'Alt', shift: 'Shift', enter: 'Enter', f5: 'F5' })[part] || part.toUpperCase()).join(' ')
+}
+
 function buildTree(files: WorkspaceFile[]): TreeNode[] {
   const root: TreeNode[] = []
 
@@ -497,6 +525,8 @@ export default function App() {
   const [palette, setPalette] = useState<{ open: boolean; mode: PaletteMode }>({ open: false, mode: 'commands' })
   const [paletteQuery, setPaletteQuery] = useState('')
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [keybindingsOpen, setKeybindingsOpen] = useState(false)
+  const [keybindings, setKeybindings] = useState<Record<string, string>>(loadKeybindings)
   const [settings, setSettings] = useState<SettingsState>(loadSettings)
   const [newFileOpen, setNewFileOpen] = useState(false)
   const [newFileName, setNewFileName] = useState('')
@@ -511,7 +541,9 @@ export default function App() {
   const [gitInfo, setGitInfo] = useState<GitStatusResult>({ isRepository: false, branch: 'main', changes: [], error: '' })
   const [gitBranches, setGitBranches] = useState<string[]>([])
   const [gitView, setGitView] = useState<'changes' | 'history' | 'github'>('changes')
-  const [gitComparison, setGitComparison] = useState<{ path: string; virtualPath: string; before: string; after: string; staged: boolean; hunks: Array<{ id: string; header: string; patch: string }> } | null>(null)
+  const [gitOperation, setGitOperation] = useState<{ operation: 'merge' | 'rebase' | null; conflicts: string[] }>({ operation: null, conflicts: [] })
+  const [gitIntegrateBranch, setGitIntegrateBranch] = useState('')
+  const [gitComparison, setGitComparison] = useState<{ path: string; virtualPath: string; before: string; after: string; staged: boolean; hunks: Array<{ id: string; header: string; patch: string }>; conflict?: boolean; base?: string } | null>(null)
   const [gitHistory, setGitHistory] = useState<Array<{ hash: string; shortHash: string; author: string; date: string; subject: string; refs: string }>>([])
   const [gitStashes, setGitStashes] = useState<Array<{ ref: string; hash: string; subject: string }>>([])
   const [githubItems, setGithubItems] = useState<{ pullRequests: Array<{ number: number; title: string; state: string; url: string }>; issues: Array<{ number: number; title: string; state: string; url: string }> }>({ pullRequests: [], issues: [] })
@@ -560,7 +592,7 @@ export default function App() {
   const [toast, setToast] = useState('')
   const [menuOpen, setMenuOpen] = useState<string | null>(null)
   const [terminalLines, setTerminalLines] = useState<Array<{ text: string; kind?: string }>>([
-    { text: `Tungsten Shell 2.1.0  ·  ${window.tungsten ? 'desktop process runner' : 'web sandbox'}`, kind: 'muted' },
+    { text: `Tungsten Shell 2.2.0  ·  ${window.tungsten ? 'desktop process runner' : 'web sandbox'}`, kind: 'muted' },
     { text: `${supportedLanguages.length} language grammars loaded. Type “help” for available commands.`, kind: 'success' },
   ])
   const [terminalInput, setTerminalInput] = useState('')
@@ -645,6 +677,7 @@ export default function App() {
     window.tungsten?.gitBranches().then(setGitBranches).catch(() => setGitBranches([]))
     window.tungsten?.gitHistory(150).then(setGitHistory).catch(() => setGitHistory([]))
     window.tungsten?.gitStashes().then(setGitStashes).catch(() => setGitStashes([]))
+    window.tungsten?.gitOperationStatus().then(setGitOperation).catch(() => setGitOperation({ operation: null, conflicts: [] }))
     window.tungsten?.githubItems().then(setGithubItems).catch(() => setGithubItems({ pullRequests: [], issues: [] }))
     window.tungsten?.detectProject().then(setProjectInfo).catch(() => undefined)
     window.tungsten?.discoverTests().then(setDiscoveredTests).catch(() => setDiscoveredTests([]))
@@ -833,6 +866,8 @@ export default function App() {
     try {
       setGitInfo(await window.tungsten.gitStatus())
       window.tungsten.gitHistory(150).then(setGitHistory).catch(() => setGitHistory([]))
+      window.tungsten.gitBranches().then(setGitBranches).catch(() => setGitBranches([]))
+      window.tungsten.gitOperationStatus().then(setGitOperation).catch(() => setGitOperation({ operation: null, conflicts: [] }))
       window.tungsten.gitStashes().then(setGitStashes).catch(() => setGitStashes([]))
       window.tungsten.githubItems().then(setGithubItems).catch(() => setGithubItems({ pullRequests: [], issues: [] }))
     } catch (error) {
@@ -975,6 +1010,20 @@ export default function App() {
     }
   }
 
+  const disconnectRemoteWorkspace = async () => {
+    await window.tungsten?.disconnectRemote().catch(() => undefined)
+    setRemoteConnected(false)
+    setWorkspaceRoot('')
+    setWorkspaceRoots([])
+    setFiles([])
+    setOpenTabs([])
+    setActivePath('')
+    setProjectInfo({ tasks: [], tests: [], frameworks: [] })
+    setDiscoveredTests([])
+    setRemoteModal(false)
+    notify('Remote workspace disconnected')
+  }
+
   const startCollaboration = async (join = false) => {
     if (!window.tungsten) return notify('Live collaboration requires the desktop app')
     try {
@@ -998,7 +1047,7 @@ export default function App() {
     setCommentInput('')
   }
 
-  const startDebugging = async () => {
+  const startDebugging = useCallback(async () => {
     if (!window.tungsten || !workspaceRoot) {
       notify('Open a desktop workspace before debugging')
       return
@@ -1027,12 +1076,12 @@ export default function App() {
       setDebugState({ running: false, output: [(error as Error).message] })
       notify(`Debugger failed: ${(error as Error).message}`)
     }
-  }
+  }, [files, notify, workspaceRoot])
 
-  const stopDebugging = async () => {
+  const stopDebugging = useCallback(async () => {
     if (window.tungsten && debugState.id) await window.tungsten.stopDebug(debugState.id)
     setDebugState((state) => ({ ...state, running: false, output: [...state.output, 'Debug session stopped'] }))
-  }
+  }, [debugState.id])
 
   const toggleBreakpoint = async (path: string, line: number) => {
     const exists = breakpoints.some((point) => point.path === path && point.line === line)
@@ -1100,6 +1149,52 @@ export default function App() {
     } catch (error) { notify(`Could not apply hunk: ${(error as Error).message}`) }
   }
 
+  const openGitConflict = async (path: string) => {
+    if (!window.tungsten) return
+    try {
+      const versions = await window.tungsten.gitConflictVersions(path)
+      const virtualPath = `.tungsten/conflicts/${fileName(path)}.merge`
+      setGitComparison({ path, virtualPath, before: versions.ours, after: versions.theirs, base: versions.base, staged: false, hunks: [], conflict: true })
+      setFiles((current) => [...current.filter((file) => file.path !== virtualPath), { path: virtualPath, content: versions.theirs, language: languageForPath(path) }])
+      openFile(virtualPath)
+    } catch (error) { notify(`Could not open conflict: ${(error as Error).message}`) }
+  }
+
+  const resolveGitConflict = async (resolution: 'ours' | 'theirs' | 'both' | 'mark') => {
+    if (!window.tungsten || !gitComparison?.conflict) return
+    try {
+      setGitInfo(await window.tungsten.gitResolveConflict(gitComparison.path, resolution))
+      notify(resolution === 'mark' ? 'Working file marked as resolved' : `Conflict resolved using ${resolution === 'ours' ? 'current' : resolution === 'theirs' ? 'incoming' : 'both'} changes`)
+      setGitComparison(null)
+      setOpenTabs((tabs) => tabs.filter((tab) => tab !== gitComparison.virtualPath))
+      setActivePath(gitComparison.path)
+      await refreshWorkspace()
+      await refreshGit()
+    } catch (error) { notify(`Could not resolve conflict: ${(error as Error).message}`) }
+  }
+
+  const integrateGitBranch = async (operation: 'merge' | 'rebase') => {
+    if (!window.tungsten || !gitIntegrateBranch) return
+    try {
+      const status = await window.tungsten.gitIntegrate(operation, gitIntegrateBranch)
+      setGitInfo(status)
+      await refreshWorkspace()
+      await refreshGit()
+      const conflicted = status.changes.some((change) => change.status.includes('U') || change.status === 'AA' || change.status === 'DD')
+      notify(`${operation === 'merge' ? 'Merge' : 'Rebase'} ${conflicted ? 'requires conflict resolution' : 'completed'}`)
+    } catch (error) { notify(`${operation} failed: ${(error as Error).message}`); await refreshGit() }
+  }
+
+  const finishGitOperation = async (action: 'continue' | 'abort') => {
+    if (!window.tungsten || !gitOperation.operation) return
+    try {
+      setGitInfo(await window.tungsten.gitOperationAction(gitOperation.operation, action))
+      await refreshWorkspace()
+      await refreshGit()
+      notify(`${gitOperation.operation} ${action === 'continue' ? 'continued' : 'aborted'}`)
+    } catch (error) { notify(`Could not ${action} ${gitOperation.operation}: ${(error as Error).message}`) }
+  }
+
   const openGitBlame = async () => {
     if (!window.tungsten || !activeFile || activeFile.language === 'diff') return
     try {
@@ -1112,6 +1207,7 @@ export default function App() {
   }
 
   const extensionCommands: CommandItem[] = extensions.flatMap((extension) => {
+    if (extension.enabled === false) return []
     const contributions = extension.contributes as { commands?: Array<{ id?: string; title?: string; command?: string }> }
     return (contributions.commands || []).filter((command) => command.title && (command.id || command.command)).map((command) => ({
       label: `Extension: ${command.title}`,
@@ -1154,6 +1250,7 @@ export default function App() {
     { label: 'Workspace: Add Folder to Workspace', detail: `${workspaceRoots.length} roots currently open`, icon: FolderPlus, action: () => { void addWorkspaceFolder() } },
     { label: 'Workspace: Refresh From Disk', detail: 'Reload files changed by other programs', icon: RefreshCw, action: refreshWorkspace },
     { label: 'Preferences: Open Settings', detail: 'Editor and workspace preferences', icon: Settings, keys: ['⌘', ','], action: () => setSettingsOpen(true) },
+    { label: 'Preferences: Open Keyboard Shortcuts', detail: 'Edit persistent command bindings', icon: Keyboard, action: () => setKeybindingsOpen(true) },
     { label: 'Workspace: Reset Starter', detail: 'Restore all starter files', icon: RotateCcw, action: resetWorkspace },
   ]
 
@@ -1336,6 +1433,10 @@ export default function App() {
   }, [settings])
 
   useEffect(() => {
+    localStorage.setItem(KEYBINDINGS_KEY, JSON.stringify(keybindings))
+  }, [keybindings])
+
+  useEffect(() => {
     if (!collaborationActive || !activePath || activePath === PREVIEW_PATH) return
     const timer = window.setTimeout(() => { void window.tungsten?.sendCollaborationEvent({ type: 'presence', state: 'cursor', name: collaborationName, path: activePath, line: cursor.line, column: cursor.column }) }, 90)
     return () => window.clearTimeout(timer)
@@ -1355,10 +1456,11 @@ export default function App() {
       ...breakpoints.filter((point) => point.path === activeFile.path).map((point) => ({ range: new monacoApi.Range(point.line, 1, point.line, 1), options: { isWholeLine: true, glyphMarginClassName: 'debug-breakpoint-glyph', glyphMarginHoverMessage: { value: point.condition ? `Conditional breakpoint: ${point.condition}` : 'Breakpoint' } } })),
       ...(coverage[activeFile.path] || []).map((entry) => ({ range: new monacoApi.Range(entry.line, 1, entry.line, 1), options: { isWholeLine: true, linesDecorationsClassName: entry.hits > 0 ? 'coverage-hit-line' : 'coverage-miss-line', overviewRuler: { color: entry.hits > 0 ? '#628844' : '#a34e49', position: 1 } } })),
       ...Object.entries(collaboratorCursors).filter(([, point]) => point.path === activeFile.path).map(([name, point]) => ({ range: new monacoApi.Range(point.line, point.column, point.line, point.column), options: { beforeContentClassName: 'collaboration-cursor', hoverMessage: { value: `${name} is editing here` } } })),
+      ...(debugFrames[0] && debugVariables.length && ((debugFrames[0].source?.path || debugFrames[0].source?.name || '').replaceAll('\\', '/').endsWith(activeFile.path) || activeFile.path.endsWith(debugFrames[0].source?.name || '__no_file__')) ? [{ range: new monacoApi.Range(debugFrames[0].line, 1, debugFrames[0].line, 1), options: { after: { content: `  ${debugVariables.slice(0, 6).map((variable) => `${variable.name} = ${variable.value}`).join('  ·  ')}`, inlineClassName: 'debug-inline-value' } } }] : []),
     ]
     const collection = editorInstance.createDecorationsCollection(decorations)
     return () => collection.clear()
-  }, [activeFile, breakpoints, collaboratorCursors, coverage, editorInstance])
+  }, [activeFile, breakpoints, collaboratorCursors, coverage, debugFrames, debugVariables, editorInstance])
 
   useEffect(() => {
     if (!settings.autosave || !dirty.size) return
@@ -1380,34 +1482,33 @@ export default function App() {
 
   useEffect(() => {
     const keydown = (event: KeyboardEvent) => {
-      const mod = event.ctrlKey || event.metaKey
-      if (event.shiftKey && event.altKey && event.key.toLowerCase() === 'f') {
-        event.preventDefault(); runEditorAction('editor.action.formatDocument')
-      } else if (mod && event.shiftKey && event.key.toLowerCase() === 'p') {
-        event.preventDefault(); setPalette({ open: true, mode: 'commands' }); setPaletteQuery('')
-      } else if (mod && event.key.toLowerCase() === 'p') {
-        event.preventDefault(); setPalette({ open: true, mode: 'files' }); setPaletteQuery('')
-      } else if (mod && event.shiftKey && event.key.toLowerCase() === 'r') {
-        event.preventDefault(); void refreshWorkspace()
-      } else if (mod && event.key.toLowerCase() === 'o') {
-        event.preventDefault(); void openDesktopFolder()
-      } else if (mod && event.key.toLowerCase() === 's') {
-        event.preventDefault(); if (activePath && activePath !== PREVIEW_PATH) void save(activePath).catch(() => undefined)
-      } else if (mod && event.key.toLowerCase() === 'b') {
-        event.preventDefault(); setSidebarVisible((value) => !value)
-      } else if (mod && event.key.toLowerCase() === 'j') {
-        event.preventDefault(); setPanelOpen((value) => !value)
-      } else if (mod && event.key === 'Enter') {
-        event.preventDefault(); runProject()
-      } else if (event.ctrlKey && event.key === '`') {
-        event.preventDefault(); setPanelOpen((value) => !value)
-      } else if (event.key === 'Escape') {
-        setPalette((current) => ({ ...current, open: false })); setSettingsOpen(false); setNewFileOpen(false); setRenameTarget(null); setMenuOpen(null); setContextMenu(null)
+      if (event.key === 'Escape') {
+        setPalette((current) => ({ ...current, open: false })); setSettingsOpen(false); setKeybindingsOpen(false); setNewFileOpen(false); setRenameTarget(null); setMenuOpen(null); setContextMenu(null)
+        return
       }
+      const shortcut = shortcutFromEvent(event)
+      const command = Object.keys(keybindings).find((id) => keybindings[id] === shortcut)
+      if (!command) return
+      event.preventDefault()
+      const actions: Record<string, () => void> = {
+        formatDocument: () => runEditorAction('editor.action.formatDocument'),
+        commandPalette: () => { setPalette({ open: true, mode: 'commands' }); setPaletteQuery('') },
+        quickOpen: () => { setPalette({ open: true, mode: 'files' }); setPaletteQuery('') },
+        refreshWorkspace: () => { void refreshWorkspace() },
+        openFolder: () => { void openDesktopFolder() },
+        save: () => { if (activePath && activePath !== PREVIEW_PATH) void save(activePath).catch(() => undefined) },
+        toggleSidebar: () => setSidebarVisible((value) => !value),
+        togglePanel: () => setPanelOpen((value) => !value),
+        toggleTerminal: () => { if (panelTab === 'TERMINAL' && panelOpen) setPanelOpen(false); else { setPanelTab('TERMINAL'); setPanelOpen(true) } },
+        runProject,
+        settings: () => setSettingsOpen(true),
+        debug: () => { if (debugState.running) void stopDebugging(); else void startDebugging() },
+      }
+      actions[command]?.()
     }
     window.addEventListener('keydown', keydown)
     return () => window.removeEventListener('keydown', keydown)
-  }, [activePath, openDesktopFolder, refreshWorkspace, runEditorAction, runProject, save])
+  }, [activePath, debugState.running, keybindings, openDesktopFolder, panelOpen, panelTab, refreshWorkspace, runEditorAction, runProject, save, startDebugging, stopDebugging])
 
   const startSidebarResize = (event: React.MouseEvent) => {
     event.preventDefault()
@@ -1544,6 +1645,7 @@ export default function App() {
         <div className="git-view-tabs"><button className={gitView === 'changes' ? 'active' : ''} onClick={() => setGitView('changes')}>Changes</button><button className={gitView === 'history' ? 'active' : ''} onClick={() => setGitView('history')}>History</button><button className={gitView === 'github' ? 'active' : ''} onClick={() => setGitView('github')}>GitHub</button></div>
         {gitView === 'changes' && <>
         {gitBranches.length > 0 && <div className="branch-switcher"><GitBranch size={13} /><select value={gitInfo.branch} onChange={(event) => { void window.tungsten?.gitCheckout(event.target.value).then((status) => { setGitInfo(status); void refreshWorkspace() }).catch((error: Error) => notify(error.message)) }}>{gitBranches.map((branch) => <option key={branch}>{branch}</option>)}</select></div>}
+        {gitOperation.operation ? <div className="git-operation-card"><strong>{gitOperation.operation.toUpperCase()} IN PROGRESS</strong><span>{gitOperation.conflicts.length ? `${gitOperation.conflicts.length} conflict${gitOperation.conflicts.length === 1 ? '' : 's'} must be resolved` : 'All conflicts resolved; ready to continue'}</span>{gitOperation.conflicts.map((path) => <button key={path} onClick={() => { void openGitConflict(path) }}><GitCompareArrows size={12} /><span>{path}</span><ChevronRight size={11} /></button>)}<div><button disabled={gitOperation.conflicts.length > 0} onClick={() => { void finishGitOperation('continue') }}><Check size={11} />Continue</button><button onClick={() => { void finishGitOperation('abort') }}><X size={11} />Abort</button></div></div> : gitBranches.length > 1 && <div className="git-integrate"><select value={gitIntegrateBranch} onChange={(event) => setGitIntegrateBranch(event.target.value)}><option value="">Integrate branch…</option>{gitBranches.filter((branch) => branch !== gitInfo.branch).map((branch) => <option key={branch}>{branch}</option>)}</select><button disabled={!gitIntegrateBranch} onClick={() => { void integrateGitBranch('merge') }}>Merge</button><button disabled={!gitIntegrateBranch} onClick={() => { void integrateGitBranch('rebase') }}>Rebase</button></div>}
         <div className="commit-box">
           <textarea
             value={commitMessage}
@@ -1560,8 +1662,8 @@ export default function App() {
           <div className="sidebar-empty"><GitCommitHorizontal size={25} /><span>Working tree is clean</span></div>
         ) : sourceChanges.map(({ path, status, staged, workingTree }) => (
           <div className="change-row" key={path}>
-            <button className="change-main" onClick={() => { if (window.tungsten) void openGitDiff(path, Boolean(staged && !workingTree)); else if (files.some((file) => file.path === path)) openFile(path) }}><FileGlyph path={path} /><span>{fileName(path)}</span><small>{path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : ''}{staged ? ' · staged' : ''}</small></button>
-            {window.tungsten && <button className="stage-button" title={staged && !workingTree ? 'Unstage file' : 'Stage file'} onClick={() => { void window.tungsten!.gitStage(path, !(staged && !workingTree)).then(setGitInfo).catch((error: Error) => notify(error.message)) }}>{staged && !workingTree ? <Minus size={12} /> : <Plus size={12} />}</button>}
+            <button className="change-main" onClick={() => { if (window.tungsten) { if (status.includes('U') || status === 'AA' || status === 'DD') void openGitConflict(path); else void openGitDiff(path, Boolean(staged && !workingTree)) } else if (files.some((file) => file.path === path)) openFile(path) }}><FileGlyph path={path} /><span>{fileName(path)}</span><small>{path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : ''}{staged ? ' · staged' : ''}</small></button>
+            {window.tungsten && !status.includes('U') && status !== 'AA' && status !== 'DD' && <button className="stage-button" title={staged && !workingTree ? 'Unstage file' : 'Stage file'} onClick={() => { void window.tungsten!.gitStage(path, !(staged && !workingTree)).then(setGitInfo).catch((error: Error) => notify(error.message)) }}>{staged && !workingTree ? <Minus size={12} /> : <Plus size={12} />}</button>}
             <b>{status}</b>
           </div>
         ))}
@@ -1583,7 +1685,7 @@ export default function App() {
           <div className="section-heading"><ChevronDown size={13} /><span>THREADS</span><span className="count-pill">{debugThreads.length}</span></div>
           <div className="debug-data-list">{debugThreads.map((thread) => <button key={thread.id} onClick={() => { setDebugState((state) => ({ ...state, threadId: thread.id })); void window.tungsten?.sendDebug(debugState.id!, { type: 'request', command: 'stackTrace', arguments: { threadId: thread.id, startFrame: 0, levels: 50 } }) }}><Cpu size={12} /><strong>{thread.name}</strong><small>#{thread.id}</small></button>)}</div>
           <div className="section-heading"><ChevronDown size={13} /><span>CALL STACK</span><span className="count-pill">{debugFrames.length}</span></div>
-          <div className="debug-data-list">{debugFrames.map((frame) => <button key={frame.id} onClick={() => { const candidate = (frame.source?.path || '').replaceAll('\\', '/'); const relative = candidate.startsWith(workspaceRoot.replaceAll('\\', '/')) ? candidate.slice(workspaceRoot.length + 1) : frame.source?.name || ''; if (files.some((file) => file.path === relative)) { openFile(relative); window.setTimeout(() => { editorInstance?.setPosition({ lineNumber: frame.line, column: 1 }); editorInstance?.revealLineInCenter(frame.line) }, 30) } void window.tungsten?.sendDebug(debugState.id!, { type: 'request', command: 'scopes', arguments: { frameId: frame.id } }) }}><Layers size={12} /><strong>{frame.name}</strong><small>{frame.source?.name || 'source'}:{frame.line}</small></button>)}</div>
+          <div className="debug-data-list">{debugFrames.map((frame) => <button key={frame.id} onClick={() => { const candidate = (frame.source?.path || '').replaceAll('\\', '/'); const relative = candidate.startsWith(workspaceRoot.replaceAll('\\', '/')) ? candidate.slice(workspaceRoot.length + 1) : files.find((file) => candidate.endsWith(`/${file.path}`))?.path || frame.source?.name || ''; if (files.some((file) => file.path === relative)) { openFile(relative); window.setTimeout(() => { editorInstance?.setPosition({ lineNumber: frame.line, column: 1 }); editorInstance?.revealLineInCenter(frame.line) }, 30) } void window.tungsten?.sendDebug(debugState.id!, { type: 'request', command: 'scopes', arguments: { frameId: frame.id } }) }}><Layers size={12} /><strong>{frame.name}</strong><small>{frame.source?.name || 'source'}:{frame.line}</small></button>)}</div>
           <div className="section-heading"><ChevronDown size={13} /><span>VARIABLES</span><span className="count-pill">{debugVariables.length}</span></div>
           <div className="debug-variable-list">{debugScopes.map((scope) => <b key={scope.name}>{scope.name}</b>)}{debugVariables.map((variable, index) => <div key={`${variable.name}-${index}`}><span>{variable.name}</span><code>{variable.value}</code><small>{variable.type}</small></div>)}</div>
           <div className="section-heading"><ChevronDown size={13} /><span>WATCH</span><span className="count-pill">{watches.length}</span></div>
@@ -1615,14 +1717,15 @@ export default function App() {
         <div className="sidebar-title"><span>EXTENSIONS</span><TipButton label="Install extension from folder" onClick={() => { void installExtension() }}><PackagePlus size={15} /></TipButton></div>
         <div className="search-box-wrap"><Search size={13} /><input placeholder="Search installed extensions" /></div>
         <div className="extension-install-banner"><PackagePlus size={17} /><div><strong>Declarative extensions</strong><p>Install commands, themes and language contributions from a local folder.</p></div><button onClick={() => { void installExtension() }}>Install</button></div>
-        <div className="section-heading"><span>INSTALLED</span><span className="count-pill">{4 + extensions.length}</span></div>
+        <div className="section-heading"><span>BUILT IN</span><span className="count-pill">4</span></div>
         {[
-          { id: 'core.languages', name: 'Language Core', description: `${supportedLanguages.length} bundled language grammars`, icon: 'L', publisher: 'Tungsten' },
-          { id: 'core.format', name: 'Formatter Core', description: 'Monaco document formatting bridge', icon: 'P', publisher: 'Tungsten' },
-          { id: 'core.git', name: 'Git Tools', description: 'Diffs, staging, branches and commits', icon: 'G', publisher: 'Tungsten' },
-          { id: 'core.debug', name: 'Debug Adapter Core', description: 'Debug Adapter Protocol transport', icon: 'D', publisher: 'Tungsten' },
-          ...extensions.map((extension) => ({ id: extension.id, name: extension.name, description: extension.description, icon: extension.name[0] || 'E', publisher: `${extension.publisher} · ${extension.verification || 'declarative'}` })),
-        ].map((extension) => <div className="extension-card" key={extension.id}><div className={`extension-icon ext-${extension.icon.toLowerCase()}`}>{extension.icon}</div><div><strong>{extension.name}</strong><p>{extension.description}</p><span>{extension.publisher} · Enabled</span></div><Settings size={13} /></div>)}
+          { id: 'core.languages', name: 'Language Core', description: `${supportedLanguages.length} bundled language grammars`, icon: 'L' },
+          { id: 'core.format', name: 'Formatter Core', description: 'Monaco document formatting bridge', icon: 'P' },
+          { id: 'core.git', name: 'Git Tools', description: 'Diffs, staging, branches and commits', icon: 'G' },
+          { id: 'core.debug', name: 'Debug Adapter Core', description: 'Debug Adapter Protocol transport', icon: 'D' },
+        ].map((extension) => <div className="extension-card" key={extension.id}><div className={`extension-icon ext-${extension.icon.toLowerCase()}`}>{extension.icon}</div><div><strong>{extension.name}</strong><p>{extension.description}</p><span>Tungsten · Enabled</span></div><ShieldCheck size={13} /></div>)}
+        <div className="section-heading"><span>INSTALLED PACKAGES</span><span className="count-pill">{extensions.length}</span></div>
+        {extensions.map((extension) => <div className={`extension-card managed ${extension.enabled === false ? 'disabled' : ''}`} key={extension.id}><div className="extension-icon">{extension.name[0] || 'E'}</div><div><strong>{extension.name}</strong><p>{extension.description}</p><span>{extension.publisher} · {extension.verification || 'declarative'} · {extension.enabled === false ? 'Disabled' : 'Enabled'}</span><small>{extension.permissions?.length ? `Permissions: ${extension.permissions.join(', ')}` : 'No runtime permissions'}</small></div><div className="extension-actions"><button title={extension.enabled === false ? 'Enable extension' : 'Disable extension'} onClick={() => { void window.tungsten?.setExtensionEnabled(extension.id, extension.enabled === false).then(setExtensions).catch((error: Error) => notify(error.message)) }}>{extension.enabled === false ? <Play size={11} /> : <CircleStop size={11} />}</button>{extension.scope !== 'workspace' && <button title="Uninstall extension" onClick={() => { void window.tungsten?.uninstallExtension(extension.id).then(setExtensions).catch((error: Error) => notify(error.message)) }}><Trash2 size={11} /></button>}</div></div>)}
       </>
     )
     return (
@@ -1681,7 +1784,7 @@ export default function App() {
       { label: 'Clear Terminal', action: () => setTerminalLines([]) },
     ],
     Help: [
-      { label: 'Keyboard Shortcuts', shortcut: 'Ctrl+K Ctrl+S', action: () => { setPalette({ open: true, mode: 'commands' }); setPaletteQuery('') } },
+      { label: 'Keyboard Shortcuts', action: () => setKeybindingsOpen(true) },
       { label: 'About Tungsten', action: () => notify('Tungsten IDE · forged for focused work') },
     ],
   }
@@ -1765,7 +1868,7 @@ export default function App() {
               <Suspense fallback={<div className="editor-loading"><div className="loading-mark"><Hammer size={24} /></div><span>Heating editor core…</span></div>}>
               {activePath === PREVIEW_PATH ? <Preview html={buildPreview()} onReload={() => notify('Preview refreshed')} /> : gitComparison && activePath === gitComparison.virtualPath ? (
                 <div className="git-compare-editor">
-                  <div className="git-compare-toolbar"><span><GitCompareArrows size={13} /> {gitComparison.path}</span><strong>{gitComparison.staged ? 'INDEX ↔ HEAD' : 'WORKTREE ↔ INDEX'}</strong><div>{gitComparison.hunks.map((hunk, index) => <button key={hunk.id} title={hunk.header} onClick={() => { void stageGitHunk(hunk.patch) }}>{gitComparison.staged ? <Minus size={11} /> : <Plus size={11} />}{gitComparison.staged ? 'Unstage' : 'Stage'} hunk {index + 1}</button>)}</div></div>
+                  <div className="git-compare-toolbar"><span><GitCompareArrows size={13} /> {gitComparison.path}</span><strong>{gitComparison.conflict ? 'CURRENT ↔ INCOMING' : gitComparison.staged ? 'INDEX ↔ HEAD' : 'WORKTREE ↔ INDEX'}</strong><div>{gitComparison.conflict ? <><button onClick={() => { void resolveGitConflict('ours') }}><Check size={11} />Accept current</button><button onClick={() => { void resolveGitConflict('theirs') }}><Check size={11} />Accept incoming</button><button onClick={() => { void resolveGitConflict('both') }}><Copy size={11} />Accept both</button><button title="Open the marker file for manual editing" onClick={() => openFile(gitComparison.path)}><FileCode2 size={11} />Edit manually</button><button title="Stage the manually edited working file" onClick={() => { void resolveGitConflict('mark') }}><GitCommitHorizontal size={11} />Mark resolved</button></> : gitComparison.hunks.map((hunk, index) => <button key={hunk.id} title={hunk.header} onClick={() => { void stageGitHunk(hunk.patch) }}>{gitComparison.staged ? <Minus size={11} /> : <Plus size={11} />}{gitComparison.staged ? 'Unstage' : 'Stage'} hunk {index + 1}</button>)}</div></div>
                   <DiffEditor height="100%" original={gitComparison.before} modified={gitComparison.after} language={files.find((file) => file.path === gitComparison.path)?.language || 'plaintext'} theme="vs-dark" options={{ readOnly: true, renderSideBySide: true, automaticLayout: true, minimap: { enabled: false }, fontSize: settings.fontSize, fontFamily: "'JetBrains Mono', 'SFMono-Regular', Consolas, monospace", originalEditable: false, scrollBeyondLastLine: false }} />
                 </div>
               ) : activeFile ? (
@@ -1915,7 +2018,7 @@ export default function App() {
           <header><span className="modal-icon"><SquareCode size={18} /></span><div><h2>Remote development</h2><p>Open code and terminals over SSH, WSL, or a development container.</p></div><button onClick={() => setRemoteModal(false)}><X size={16} /></button></header>
           <div className="remote-form"><label>Host<input value={sshConfig.host} placeholder="dev.example.com" onChange={(event) => setSshConfig((config) => ({ ...config, host: event.target.value }))} /></label><label>Port<input value={sshConfig.port} inputMode="numeric" onChange={(event) => setSshConfig((config) => ({ ...config, port: event.target.value }))} /></label><label>Username<input value={sshConfig.username} autoComplete="username" onChange={(event) => setSshConfig((config) => ({ ...config, username: event.target.value }))} /></label><label>Remote folder<input value={sshConfig.root} onChange={(event) => setSshConfig((config) => ({ ...config, root: event.target.value }))} /></label><label>Password (optional)<input type="password" value={sshConfig.password} autoComplete="current-password" onChange={(event) => setSshConfig((config) => ({ ...config, password: event.target.value }))} /></label><label>Private key path (optional)<input value={sshConfig.privateKeyPath} placeholder="~/.ssh/id_ed25519" onChange={(event) => setSshConfig((config) => ({ ...config, privateKeyPath: event.target.value }))} /></label></div>
           <div className="remote-profiles"><div><strong>WSL distributions</strong>{remoteProfiles.wsl.length ? remoteProfiles.wsl.map((distribution) => <button key={distribution} onClick={() => { newTerminal({ kind: 'wsl', id: distribution, label: `WSL: ${distribution}` }); setRemoteModal(false) }}>{distribution}</button>) : <span>No distributions detected</span>}</div><div><strong>Running containers</strong>{remoteProfiles.containers.length ? remoteProfiles.containers.map((container) => <button key={container.id} onClick={() => { newTerminal({ kind: 'container', id: container.id, label: container.name }); setRemoteModal(false) }}>{container.name} · {container.image}</button>) : <span>No containers detected</span>}</div><div><strong>Dev Container</strong><span>{remoteProfiles.devcontainer ? '.devcontainer/devcontainer.json detected; use a running container terminal below.' : 'No configuration in this workspace'}</span></div></div>
-          <footer>{remoteConnected && <button className="secondary" onClick={() => { void window.tungsten?.disconnectRemote(); setRemoteConnected(false); setRemoteModal(false) }}>Disconnect</button>}<span /><button className="secondary" onClick={() => setRemoteModal(false)}>Cancel</button><button className="primary" disabled={!sshConfig.host || !sshConfig.username} onClick={() => { void connectRemote() }}>Connect SSH</button></footer>
+          <footer>{remoteConnected && <button className="secondary" onClick={() => { void disconnectRemoteWorkspace() }}>Disconnect</button>}<span /><button className="secondary" onClick={() => setRemoteModal(false)}>Cancel</button><button className="primary" disabled={!sshConfig.host || !sshConfig.username} onClick={() => { void connectRemote() }}>Connect SSH</button></footer>
         </section>
       </div>}
 
@@ -1957,9 +2060,17 @@ export default function App() {
               ['Product telemetry', 'Share anonymous feature usage; disabled by default.', 'telemetry'],
               ['Crash reports', 'Allow packaged builds to create local crash diagnostics.', 'crashReports'],
             ].map(([title, description, key]) => <label className="toggle-setting" key={key}><div><strong>{title}</strong><span>{description}</span></div><input type="checkbox" checked={settings[key as keyof SettingsState] as boolean} onChange={(event) => setSettings({ ...settings, [key]: event.target.checked })} /><span className="toggle-track"><i /></span></label>)}
-            <div className="keybinding-editor"><div><strong>Keyboard shortcuts</strong><span>Search and execute all commands from the palette.</span></div><button onClick={() => { setSettingsOpen(false); setPalette({ open: true, mode: 'commands' }); setPaletteQuery('') }}>Open keybinding editor <kbd>Ctrl+K Ctrl+S</kbd></button></div>
+            <div className="keybinding-editor"><div><strong>Keyboard shortcuts</strong><span>Search and execute all commands from the palette.</span></div><button onClick={() => { setSettingsOpen(false); setKeybindingsOpen(true) }}>Open keybinding editor <kbd>{formatShortcut(keybindings.commandPalette)}</kbd></button></div>
           </div>
           <footer><button onClick={() => setSettings(defaultSettings)}>Reset defaults</button><button className="primary" onClick={() => setSettingsOpen(false)}>Done</button></footer>
+        </section>
+      </div>}
+
+      {keybindingsOpen && <div className="overlay" onMouseDown={() => setKeybindingsOpen(false)}>
+        <section className="keybindings-modal" onMouseDown={(event) => event.stopPropagation()}>
+          <header><div><span className="modal-icon"><Keyboard size={17} /></span><div><h2>Keyboard shortcuts</h2><p>Select a binding and press a new combination. Backspace clears it.</p></div></div><button onClick={() => setKeybindingsOpen(false)}><X size={17} /></button></header>
+          <div className="keybindings-list">{Object.entries(keybindingLabels).map(([id, label]) => <label key={id}><span>{label}</span><input readOnly value={formatShortcut(keybindings[id])} onKeyDown={(event) => { event.preventDefault(); event.stopPropagation(); if (event.key === 'Escape') { setKeybindingsOpen(false); return } if ((event.key === 'Backspace' || event.key === 'Delete') && !event.ctrlKey && !event.metaKey && !event.altKey) { setKeybindings((current) => ({ ...current, [id]: '' })); return } const shortcut = shortcutFromEvent(event); if (!shortcut) return; const duplicate = Object.entries(keybindings).find(([otherId, value]) => otherId !== id && value === shortcut); if (duplicate) { notify(`${formatShortcut(shortcut)} was reassigned from ${keybindingLabels[duplicate[0]]}`); setKeybindings((current) => ({ ...current, [duplicate[0]]: '', [id]: shortcut })) } else setKeybindings((current) => ({ ...current, [id]: shortcut })) }} onFocus={(event) => event.currentTarget.select()} /></label>)}</div>
+          <footer><button onClick={() => setKeybindings({ ...defaultKeybindings })}>Reset defaults</button><button className="primary" onClick={() => setKeybindingsOpen(false)}>Done</button></footer>
         </section>
       </div>}
 

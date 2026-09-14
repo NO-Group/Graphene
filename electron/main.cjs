@@ -1,5 +1,7 @@
 const { app, BrowserWindow, dialog, ipcMain, shell } = require('electron')
 const { exec, execFile, fork, spawn } = require('node:child_process')
+const { EventEmitter } = require('node:events')
+const { PassThrough } = require('node:stream')
 const fs = require('node:fs/promises')
 const path = require('node:path')
 const { pathToFileURL } = require('node:url')
@@ -605,15 +607,44 @@ function languageServerSpec(language) {
   return spec ? { command: spec[0], args: spec.slice(1), env: {} } : null
 }
 
+function remoteFileUri(absolutePath) {
+  return `file://${absolutePath.split('/').map((segment) => encodeURIComponent(segment)).join('/')}`
+}
+
+function remoteLanguageServerSpec(language) {
+  if (language === 'javascript' || language === 'typescript') return { command: 'typescript-language-server', args: ['--stdio'], env: {} }
+  return languageServerSpec(language)
+}
+
+function spawnRemoteLanguageServer(spec) {
+  const processHandle = new EventEmitter()
+  processHandle.stdin = new PassThrough()
+  processHandle.stdout = new PassThrough()
+  processHandle.stderr = new PassThrough()
+  processHandle.kill = () => processHandle.stream?.close()
+  const quote = (value) => `'${String(value).replaceAll("'", "'\\''")}'`
+  const command = `cd ${quote(remoteWorkspace.root)} && ${[spec.command, ...spec.args].map(quote).join(' ')}`
+  remoteWorkspace.client.exec(command, (error, stream) => {
+    if (error) { processHandle.emit('error', error); return }
+    processHandle.stream = stream
+    processHandle.stdin.pipe(stream)
+    stream.pipe(processHandle.stdout)
+    stream.stderr.pipe(processHandle.stderr)
+    stream.once('close', (code) => processHandle.emit('exit', code))
+    processHandle.emit('spawn')
+  })
+  return processHandle
+}
+
 async function startLanguageServer(language) {
-  if (!workspaceRoot) throw new Error('Open a workspace before starting a language server.')
+  if (!workspaceRoot && !remoteWorkspace) throw new Error('Open a workspace before starting a language server.')
   const existing = languageServers.get(language)
   if (existing) return { running: true, language, capabilities: existing.capabilities }
-  const spec = languageServerSpec(language)
+  const spec = remoteWorkspace ? remoteLanguageServerSpec(language) : languageServerSpec(language)
   if (!spec) return { running: false, language, error: `No language-server adapter is configured for ${language}.` }
 
   return new Promise((resolve) => {
-    const child = spawn(spec.command, spec.args, {
+    const child = remoteWorkspace ? spawnRemoteLanguageServer(spec) : spawn(spec.command, spec.args, {
       cwd: workspaceRoot,
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
@@ -642,9 +673,10 @@ async function startLanguageServer(language) {
     })
     child.once('spawn', async () => {
       try {
+        const rootUri = remoteWorkspace ? remoteFileUri(remoteWorkspace.root) : pathToFileURL(workspaceRoot).href
         const result = await peer.request('initialize', {
           processId: process.pid,
-          rootUri: pathToFileURL(workspaceRoot).href,
+          rootUri,
           capabilities: {
             textDocument: {
               completion: { completionItem: { snippetSupport: true } },
@@ -653,8 +685,8 @@ async function startLanguageServer(language) {
             },
             workspace: { workspaceFolders: true },
           },
-          workspaceFolders: [
-            { uri: pathToFileURL(workspaceRoot).href, name: path.basename(workspaceRoot) },
+          workspaceFolders: remoteWorkspace ? [{ uri: rootUri, name: path.posix.basename(remoteWorkspace.root) || remoteWorkspace.host }] : [
+            { uri: rootUri, name: path.basename(workspaceRoot) },
             ...workspaceMounts.map((mount) => ({ uri: pathToFileURL(mount.path).href, name: mount.name })),
           ],
         })
@@ -673,6 +705,7 @@ async function startLanguageServer(language) {
     })
     child.once('exit', (code) => {
       languageServers.delete(language)
+      if (!settled) { settled = true; resolve({ running: false, language, error: `${spec.command} exited with code ${code} before initialization.` }) }
       if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('lsp:status', { language, running: false, code })
     })
   })
@@ -698,15 +731,20 @@ async function gitStatus() {
 }
 
 async function detectProject() {
-  if (!workspaceRoot) return { tasks: [], tests: [], frameworks: [] }
+  if (!workspaceRoot && !remoteWorkspace) return { tasks: [], tests: [], frameworks: [] }
   const tasks = []
   const tests = []
   const frameworks = []
-  const has = async (name) => fs.access(path.join(workspaceRoot, name)).then(() => true).catch(() => false)
+  const readProjectFile = async (name) => remoteWorkspace
+    ? sftpCall(remoteWorkspace.sftp, 'readFile', safeRemotePath(name), { encoding: 'utf8' })
+    : fs.readFile(path.join(workspaceRoot, name), 'utf8')
+  const has = async (name) => remoteWorkspace
+    ? sftpCall(remoteWorkspace.sftp, 'stat', safeRemotePath(name)).then(() => true).catch(() => false)
+    : fs.access(path.join(workspaceRoot, name)).then(() => true).catch(() => false)
 
   if (await has('package.json')) {
     try {
-      const manifest = JSON.parse(await fs.readFile(path.join(workspaceRoot, 'package.json'), 'utf8'))
+      const manifest = JSON.parse(await readProjectFile('package.json'))
       Object.keys(manifest.scripts || {}).forEach((script) => tasks.push({ label: `npm: ${script}`, command: `npm run ${script}`, kind: script.includes('test') ? 'test' : 'task' }))
       if (manifest.scripts?.test) tests.push({ label: 'npm test', command: 'npm test' })
       frameworks.push('Node.js')
@@ -734,11 +772,12 @@ async function detectProject() {
   }
   if (await has('build.gradle') || await has('build.gradle.kts')) {
     frameworks.push('Gradle')
-    tasks.push({ label: 'Gradle: build', command: process.platform === 'win32' ? 'gradlew.bat build' : './gradlew build', kind: 'build' })
-    tests.push({ label: 'Gradle: test', command: process.platform === 'win32' ? 'gradlew.bat test' : './gradlew test', kind: 'test' })
+    const gradle = !remoteWorkspace && process.platform === 'win32' ? 'gradlew.bat' : './gradlew'
+    tasks.push({ label: 'Gradle: build', command: `${gradle} build`, kind: 'build' })
+    tests.push({ label: 'Gradle: test', command: `${gradle} test`, kind: 'test' })
   }
   try {
-    const custom = JSON.parse(await fs.readFile(path.join(workspaceRoot, '.tungsten', 'tasks.json'), 'utf8'))
+    const custom = JSON.parse(await readProjectFile('.tungsten/tasks.json'))
     for (const task of custom.tasks || []) {
       if (typeof task.label === 'string' && typeof task.command === 'string') tasks.push({ label: task.label, command: task.command, kind: task.kind || 'task' })
     }
@@ -747,12 +786,12 @@ async function detectProject() {
 }
 
 async function discoverTests() {
-  if (!workspaceRoot) return []
-  const { files } = await readWorkspace(workspaceRoot)
+  if (!workspaceRoot && !remoteWorkspace) return []
+  const files = remoteWorkspace ? (await readRemoteWorkspace()).files : await readWorkspace(workspaceRoot)
   const candidates = files.filter((file) => /(^|\/)(__tests__|tests?|specs?)(\/|\.)|\.(test|spec)\.[^.]+$/i.test(file.path) || /_test\.(go|py)$|tests?\.rs$/i.test(file.path))
   const tests = []
   for (const file of candidates.slice(0, 1000)) {
-    const content = await fs.readFile(resolveWorkspacePath(file.path), 'utf8').catch(() => '')
+    const content = file.content || ''
     content.split('\n').forEach((line, index) => {
       const script = line.match(/\b(?:it|test)\s*\(\s*['"`]([^'"`]+)['"`]/)
       const python = line.match(/^\s*def\s+(test_[A-Za-z0-9_]+)/)
@@ -772,32 +811,54 @@ async function discoverTests() {
   return tests.slice(0, 5000)
 }
 
+async function executeWorkspaceCommand(command, timeout = 120000) {
+  if (remoteWorkspace) {
+    return new Promise((resolve) => {
+      const quote = (value) => `'${String(value).replaceAll("'", "'\\''")}'`
+      remoteWorkspace.client.exec(`cd ${quote(remoteWorkspace.root)} && ${command}`, (error, stream) => {
+        if (error) { resolve({ code: 1, stdout: '', stderr: error.message }); return }
+        let stdout = ''
+        let stderr = ''
+        let timedOut = false
+        const timer = setTimeout(() => { timedOut = true; stderr += '\nCommand timed out.'; stream.close() }, timeout)
+        stream.on('data', (chunk) => { stdout += chunk.toString() })
+        stream.stderr.on('data', (chunk) => { stderr += chunk.toString() })
+        stream.once('close', (code) => { clearTimeout(timer); resolve({ code: timedOut ? 124 : Number(code) || 0, stdout, stderr }) })
+      })
+    })
+  }
+  return new Promise((resolve) => {
+    exec(command, { cwd: workspaceRoot, timeout, maxBuffer: 8 * 1024 * 1024, windowsHide: true, env: { ...process.env, FORCE_COLOR: '0', CI: '1' } }, (error, stdout, stderr) => resolve({ code: typeof error?.code === 'number' ? error.code : error ? 1 : 0, stdout: stdout || '', stderr: stderr || '' }))
+  })
+}
+
 async function runDiscoveredTest(testId) {
   if (typeof testId !== 'string' || testId.length > 2000) throw new Error('Invalid test id.')
   const test = (await discoverTests()).find((candidate) => candidate.id === testId)
   if (!test) throw new Error('The selected test is no longer available.')
   const startedAt = Date.now()
-  const result = await new Promise((resolve) => {
-    exec(test.command, { cwd: workspaceRoot, timeout: 120000, maxBuffer: 8 * 1024 * 1024, windowsHide: true, env: { ...process.env, FORCE_COLOR: '0', CI: '1' } }, (error, stdout, stderr) => {
-      const output = `${stdout || ''}${stderr || ''}`.trim()
-      const lines = output.split(/\r?\n/).filter(Boolean)
-      const failures = lines.filter((line) => /(?:\bfail(?:ed|ure)?\b|\berror\b|assertionerror|expected.+received)/i.test(line)).slice(0, 100)
-      const snapshots = lines.filter((line) => /snapshot/i.test(line)).slice(0, 100)
-      resolve({ id: test.id, status: error ? 'failed' : 'passed', code: typeof error?.code === 'number' ? error.code : error ? 1 : 0, durationMs: Date.now() - startedAt, stdout: stdout || '', stderr: stderr || '', output, failures, snapshots })
-    })
-  })
+  const execution = await executeWorkspaceCommand(test.command)
+  const output = `${execution.stdout}${execution.stderr}`.trim()
+  const lines = output.split(/\r?\n/).filter(Boolean)
+  const failures = lines.filter((line) => /(?:\bfail(?:ed|ure)?\b|\berror\b|assertionerror|expected.+received)/i.test(line)).slice(0, 100)
+  const snapshots = lines.filter((line) => /snapshot/i.test(line)).slice(0, 100)
+  const result = { id: test.id, status: execution.code === 0 ? 'passed' : 'failed', code: execution.code, durationMs: Date.now() - startedAt, stdout: execution.stdout, stderr: execution.stderr, output, failures, snapshots }
   return { ...result, coverage: await readCoverage() }
 }
 
 async function readCoverage() {
-  if (!workspaceRoot) return {}
+  if (!workspaceRoot && !remoteWorkspace) return {}
   for (const candidate of ['coverage/lcov.info', 'lcov.info']) {
-    const content = await fs.readFile(resolveWorkspacePath(candidate), 'utf8').catch(() => '')
+    const content = remoteWorkspace
+      ? await sftpCall(remoteWorkspace.sftp, 'readFile', safeRemotePath(candidate), { encoding: 'utf8' }).catch(() => '')
+      : await fs.readFile(resolveWorkspacePath(candidate), 'utf8').catch(() => '')
     if (!content) continue
     const coverage = {}
     let source = ''
     for (const line of content.split('\n')) {
-      if (line.startsWith('SF:')) source = path.relative(workspaceRoot, path.resolve(workspaceRoot, line.slice(3))).replaceAll(path.sep, '/')
+      if (line.startsWith('SF:')) source = remoteWorkspace
+        ? path.posix.relative(remoteWorkspace.root, path.posix.resolve(remoteWorkspace.root, line.slice(3)))
+        : path.relative(workspaceRoot, path.resolve(workspaceRoot, line.slice(3))).replaceAll(path.sep, '/')
       if (source && line.startsWith('DA:')) {
         const [lineNumber, hits] = line.slice(3).split(',').map(Number)
         if (!coverage[source]) coverage[source] = []
@@ -809,9 +870,20 @@ async function readCoverage() {
   return {}
 }
 
+function extensionStatePath() {
+  return path.join(app.getPath('userData'), 'extension-state.json')
+}
+
+async function disabledExtensionIds() {
+  try { return new Set(JSON.parse(await fs.readFile(extensionStatePath(), 'utf8')).filter((id) => typeof id === 'string')) }
+  catch { return new Set() }
+}
+
 async function scanExtensions() {
-  const roots = [path.join(app.getPath('userData'), 'extensions')]
+  const userExtensionRoot = path.join(app.getPath('userData'), 'extensions')
+  const roots = [userExtensionRoot]
   if (workspaceRoot) roots.push(path.join(workspaceRoot, '.tungsten', 'extensions'))
+  const disabled = await disabledExtensionIds()
   const extensions = []
 
   for (const root of roots) {
@@ -840,6 +912,8 @@ async function scanExtensions() {
           permissions: Array.isArray(manifest.permissions) ? manifest.permissions.filter((permission) => typeof permission === 'string').slice(0, 50) : [],
           entry: extensionEntry,
           verification,
+          enabled: !disabled.has(manifest.id),
+          scope: root === userExtensionRoot ? 'user' : 'workspace',
           location: path.join(root, entry.name),
         })
       } catch { /* Skip invalid extension folders. */ }
@@ -849,13 +923,17 @@ async function scanExtensions() {
 }
 
 function startExtensionHost(extensions) {
-  if (extensionHost?.connected) extensionHost.kill()
-  extensionHost = fork(path.join(__dirname, 'extension-host.cjs'), [], {
+  const previousHost = extensionHost
+  if (previousHost?.connected) previousHost.kill()
+  for (const { reject } of extensionRequests.values()) reject(new Error('Extension host restarted.'))
+  extensionRequests.clear()
+  const host = fork(path.join(__dirname, 'extension-host.cjs'), [], {
     stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
     env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
   })
-  extensionHost.on('message', (message) => {
-    if (message?.type === 'ready') extensionHost.send({ type: 'activate', extensions: extensions.filter((extension) => extension.entry && extension.verification === 'verified' && extension.permissions.every((permission) => ['commands', 'themes', 'languages', 'keybindings', 'sidebar'].includes(permission))) })
+  extensionHost = host
+  host.on('message', (message) => {
+    if (message?.type === 'ready') host.send({ type: 'activate', extensions: extensions.filter((extension) => extension.enabled && extension.entry && extension.verification === 'verified' && extension.permissions.every((permission) => ['commands', 'themes', 'languages', 'keybindings', 'sidebar'].includes(permission))) })
     if (message?.type === 'result' && extensionRequests.has(message.requestId)) {
       const { resolve, reject } = extensionRequests.get(message.requestId)
       extensionRequests.delete(message.requestId)
@@ -863,7 +941,8 @@ function startExtensionHost(extensions) {
     }
     if (mainWindow && !mainWindow.isDestroyed() && ['activated', 'registered-command', 'log', 'error'].includes(message?.type)) mainWindow.webContents.send('extensions:event', message)
   })
-  extensionHost.once('exit', () => {
+  host.once('exit', () => {
+    if (extensionHost !== host) return
     extensionHost = null
     for (const { reject } of extensionRequests.values()) reject(new Error('Extension host stopped.'))
     extensionRequests.clear()
@@ -1012,6 +1091,9 @@ ipcMain.handle('desktop:restore-workspace', async () => {
 ipcMain.handle('desktop:refresh-workspace', () => remoteWorkspace ? readRemoteWorkspace() : workspacePayload())
 ipcMain.handle('remote:ssh-connect', (_event, configuration) => connectSshWorkspace(configuration))
 ipcMain.handle('remote:ssh-disconnect', () => {
+  resetWorkspaceLanguageServers()
+  debugSessions.forEach((session) => session.peer.dispose())
+  debugSessions.clear()
   if (remoteWorkspace?.client) remoteWorkspace.client.end()
   remoteWorkspace = null
   return { ok: true }
@@ -1067,7 +1149,7 @@ ipcMain.handle('desktop:reveal-path', async (_event, relativePath) => {
   shell.showItemInFolder(await resolveExistingWorkspacePath(relativePath))
   return { ok: true }
 })
-ipcMain.handle('desktop:absolute-path', (_event, relativePath) => resolveExistingWorkspacePath(relativePath))
+ipcMain.handle('desktop:absolute-path', (_event, relativePath) => remoteWorkspace ? safeRemotePath(relativePath) : resolveExistingWorkspacePath(relativePath))
 
 ipcMain.handle('desktop:git-status', () => gitStatus())
 
@@ -1177,7 +1259,47 @@ ipcMain.handle('desktop:git-stash-pop', async (_event, reference = 'stash@{0}') 
 })
 ipcMain.handle('desktop:git-integrate', async (_event, operation, branch) => {
   if (!['merge', 'rebase'].includes(operation) || typeof branch !== 'string' || !/^[\w./-]{1,200}$/.test(branch)) throw new Error('Invalid Git integration request.')
-  await runFile('git', [operation, branch])
+  try { await runFile('git', [operation, branch]) } catch (error) {
+    const status = await gitStatus()
+    if (status.changes.some((change) => change.status.includes('U') || change.status === 'AA' || change.status === 'DD')) return status
+    throw error
+  }
+  return gitStatus()
+})
+ipcMain.handle('desktop:git-operation-status', async () => {
+  if (!workspaceRoot) return { operation: null, conflicts: [] }
+  const gitDirectory = await runFile('git', ['rev-parse', '--git-dir']).then(({ stdout }) => path.resolve(workspaceRoot, stdout.trim())).catch(() => '')
+  if (!gitDirectory) return { operation: null, conflicts: [] }
+  const exists = (candidate) => fs.access(path.join(gitDirectory, candidate)).then(() => true).catch(() => false)
+  const operation = await exists('MERGE_HEAD') ? 'merge' : await exists('rebase-merge') || await exists('rebase-apply') ? 'rebase' : null
+  const { stdout } = await runFile('git', ['diff', '--name-only', '--diff-filter=U', '-z']).catch(() => ({ stdout: '' }))
+  return { operation, conflicts: stdout.split('\0').filter(Boolean) }
+})
+ipcMain.handle('desktop:git-conflict-versions', async (_event, relativePath) => {
+  const { mount } = resolveWorkspaceTarget(relativePath)
+  if (mount) throw new Error('Git conflicts are scoped to the primary workspace root.')
+  const show = (stage) => runFile('git', ['show', `:${stage}:${relativePath}`]).then(({ stdout }) => stdout).catch(() => '')
+  const [base, ours, theirs] = await Promise.all([show(1), show(2), show(3)])
+  return { path: relativePath, base, ours, theirs }
+})
+ipcMain.handle('desktop:git-resolve-conflict', async (_event, relativePath, resolution) => {
+  if (!['ours', 'theirs', 'both', 'mark'].includes(resolution)) throw new Error('Invalid conflict resolution.')
+  const { mount } = resolveWorkspaceTarget(relativePath)
+  if (mount) throw new Error('Git conflicts are scoped to the primary workspace root.')
+  const absolutePath = await resolveWritablePath(relativePath)
+  if (resolution === 'ours' || resolution === 'theirs') await runFile('git', ['checkout', `--${resolution}`, '--', relativePath])
+  if (resolution === 'both') {
+    const show = (stage) => runFile('git', ['show', `:${stage}:${relativePath}`]).then(({ stdout }) => stdout).catch(() => '')
+    const [ours, theirs] = await Promise.all([show(2), show(3)])
+    await fs.writeFile(absolutePath, `${ours}${ours.endsWith('\n') || !ours ? '' : '\n'}${theirs}`, 'utf8')
+  }
+  await runFile('git', ['add', '--', relativePath])
+  return gitStatus()
+})
+ipcMain.handle('desktop:git-operation-action', async (_event, operation, action) => {
+  if (!['merge', 'rebase'].includes(operation) || !['continue', 'abort'].includes(action)) throw new Error('Invalid Git operation action.')
+  const args = operation === 'merge' && action === 'continue' ? ['commit', '--no-edit'] : ['-c', 'core.editor=true', operation, `--${action}`]
+  await runFile('git', args)
   return gitStatus()
 })
 ipcMain.handle('desktop:github-items', async () => {
@@ -1252,7 +1374,7 @@ ipcMain.handle('terminal:kill', (_event, id) => {
   return { ok: true }
 })
 
-ipcMain.handle('lsp:file-uri', async (_event, relativePath) => pathToFileURL(await resolveExistingWorkspacePath(relativePath)).href)
+ipcMain.handle('lsp:file-uri', async (_event, relativePath) => remoteWorkspace ? remoteFileUri(safeRemotePath(relativePath)) : pathToFileURL(await resolveExistingWorkspacePath(relativePath)).href)
 ipcMain.handle('lsp:start', (_event, language) => startLanguageServer(language))
 ipcMain.handle('lsp:request', async (_event, language, method, params) => {
   if (typeof method !== 'string' || !/^[\w$/]+$/.test(method)) throw new Error('Invalid language service method.')
@@ -1274,18 +1396,19 @@ ipcMain.handle('lsp:stop', (_event, language) => {
 })
 
 function expandDebugVariables(value) {
-  if (typeof value === 'string') return value.replaceAll('${workspaceFolder}', workspaceRoot || '')
+  if (typeof value === 'string') return value.replaceAll('${workspaceFolder}', remoteWorkspace?.root || workspaceRoot || '')
   if (Array.isArray(value)) return value.map(expandDebugVariables)
   if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, expandDebugVariables(item)]))
   return value
 }
 
 ipcMain.handle('debug:start', async (_event, configuration) => {
-  if (!workspaceRoot) throw new Error('Open a workspace before debugging.')
+  if (!workspaceRoot && !remoteWorkspace) throw new Error('Open a workspace before debugging.')
   const adapter = configuration?.adapter
   if (!adapter || typeof adapter.command !== 'string' || !adapter.command) throw new Error('The launch configuration needs an adapter command.')
   const id = `debug-${Date.now()}`
-  const child = spawn(adapter.command, Array.isArray(adapter.args) ? adapter.args : [], {
+  const args = Array.isArray(adapter.args) ? adapter.args : []
+  const child = remoteWorkspace ? spawnRemoteLanguageServer({ command: adapter.command, args, env: {} }) : spawn(adapter.command, args, {
     cwd: workspaceRoot,
     stdio: ['pipe', 'pipe', 'pipe'],
     windowsHide: true,
@@ -1370,6 +1493,29 @@ ipcMain.handle('extensions:install-folder', async () => {
   return { canceled: false, extensions }
 })
 
+ipcMain.handle('extensions:set-enabled', async (_event, extensionId, enabled) => {
+  if (typeof extensionId !== 'string' || !/^[a-z0-9._-]+$/i.test(extensionId) || typeof enabled !== 'boolean') throw new Error('Invalid extension state.')
+  const disabled = await disabledExtensionIds()
+  if (enabled) disabled.delete(extensionId); else disabled.add(extensionId)
+  await fs.writeFile(extensionStatePath(), JSON.stringify([...disabled], null, 2), 'utf8')
+  const extensions = await scanExtensions()
+  startExtensionHost(extensions)
+  return extensions
+})
+ipcMain.handle('extensions:uninstall', async (_event, extensionId) => {
+  if (typeof extensionId !== 'string' || !/^[a-z0-9._-]+$/i.test(extensionId)) throw new Error('Invalid extension id.')
+  const extensions = await scanExtensions()
+  const extension = extensions.find((candidate) => candidate.id === extensionId)
+  const userRoot = path.join(app.getPath('userData'), 'extensions')
+  if (!extension || !extension.location.startsWith(`${userRoot}${path.sep}`)) throw new Error('Only user-installed extensions can be uninstalled here.')
+  const approval = await dialog.showMessageBox(mainWindow, { type: 'warning', buttons: ['Cancel', 'Uninstall'], defaultId: 0, cancelId: 0, title: 'Uninstall extension', message: `Uninstall ${extension.name}?` })
+  if (approval.response !== 1) return extensions
+  await fs.rm(extension.location, { recursive: true, force: true })
+  const updated = await scanExtensions()
+  startExtensionHost(updated)
+  return updated
+})
+
 ipcMain.handle('extensions:execute', (_event, command, args = []) => {
   if (!extensionHost?.connected || typeof command !== 'string') throw new Error('Extension host is unavailable.')
   const requestId = ++extensionRequestSequence
@@ -1432,25 +1578,9 @@ ipcMain.handle('updater:download', () => autoUpdater.downloadUpdate())
 ipcMain.handle('updater:install', () => autoUpdater.quitAndInstall())
 
 ipcMain.handle('desktop:run-command', async (_event, command) => {
-  if (!workspaceRoot) throw new Error('Open a workspace before running commands.')
+  if (!workspaceRoot && !remoteWorkspace) throw new Error('Open a workspace before running commands.')
   if (typeof command !== 'string' || !command.trim() || command.length > 4000) throw new Error('Invalid command.')
-
-  return new Promise((resolve) => {
-    exec(command, {
-      cwd: workspaceRoot,
-      timeout: 120000,
-      maxBuffer: 2 * 1024 * 1024,
-      windowsHide: true,
-      shell: process.platform === 'win32' ? process.env.ComSpec || 'cmd.exe' : process.env.SHELL || '/bin/sh',
-      env: { ...process.env, FORCE_COLOR: '0', TERM: 'dumb' },
-    }, (error, stdout, stderr) => {
-      resolve({
-        code: typeof error?.code === 'number' ? error.code : error ? 1 : 0,
-        stdout: stdout || '',
-        stderr: stderr || (error?.killed ? 'Command timed out after 120 seconds.' : ''),
-      })
-    })
-  })
+  return executeWorkspaceCommand(command)
 })
 
 ipcMain.handle('desktop:open-external', async (_event, url) => {

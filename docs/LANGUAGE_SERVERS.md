@@ -1,6 +1,6 @@
 # Language servers
 
-Tungsten bundles the TypeScript language server and can connect to language servers installed on the computer.
+Tungsten bundles the TypeScript language server for local workspaces and can connect to language servers installed on the computer or active SSH host.
 
 | Language | Executable |
 | --- | --- |
@@ -16,4 +16,6 @@ Tungsten bundles the TypeScript language server and can connect to language serv
 | Kotlin | `kotlin-language-server` |
 | Lua | `lua-language-server` |
 
-When a supported file is opened, Tungsten starts the matching server on demand. Completion, hover information, and diagnostics are bridged into Monaco. If an external server is unavailable, editing and bundled syntax highlighting continue normally.
+When a supported file is opened, Tungsten starts the matching server on demand. Completion, hover, diagnostics, definitions, references, rename, signatures, semantic tokens, and code actions are bridged into Monaco. Multi-root local workspaces initialize and update `workspaceFolders`.
+
+For SSH workspaces, Tungsten starts the executable on the remote host through the authenticated SSH transport and maps document URIs to the remote POSIX root. `typescript-language-server` must therefore be installed on the remote host for JavaScript/TypeScript intelligence. If any external server is unavailable, editing and bundled syntax highlighting continue normally.

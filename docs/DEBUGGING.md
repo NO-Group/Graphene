@@ -23,6 +23,6 @@ Tungsten can launch any Debug Adapter Protocol implementation that communicates 
 }
 ```
 
-The selected adapter must be installed on the computer and available on `PATH`. Tungsten handles DAP framing, initialization, launch, configuration completion, output events, and lifecycle management. Use the Run and Debug sidebar to start or stop the session and manage editor breakpoints.
+The selected adapter must be installed on the computer—or on the active SSH host—and available on `PATH`. Tungsten handles local or SSH-hosted DAP framing, initialization, launch, configuration completion, output events, and lifecycle management. Use the Run and Debug sidebar to start or stop the session and manage editor breakpoints. Threads, call stacks, scopes, variables, watches, and inline stopped-line values are shown when supplied by the adapter.
 
 Common adapters include `debugpy` for Python, `codelldb` for C/C++/Rust, `delve` for Go, and the Java debug server.
