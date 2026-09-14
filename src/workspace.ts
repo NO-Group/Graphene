@@ -145,34 +145,73 @@ dist
 
 export const fileName = (path: string) => path.split('/').pop() ?? path
 
+const languageByExtension: Record<string, string> = {
+  astro: 'html', bat: 'bat', c: 'c', cc: 'cpp', clj: 'clojure', cljs: 'clojure',
+  coffee: 'coffeescript', conf: 'ini', cpp: 'cpp', cs: 'csharp', css: 'css',
+  dart: 'dart', ex: 'elixir', exs: 'elixir', fs: 'fsharp', fsx: 'fsharp', go: 'go',
+  gql: 'graphql', graphql: 'graphql', h: 'cpp', handlebars: 'handlebars', hbs: 'handlebars',
+  hpp: 'cpp', html: 'html', ini: 'ini', ipynb: 'json', java: 'java', jl: 'julia',
+  js: 'javascript', jsx: 'javascript', json: 'json', jsonc: 'json', kt: 'kotlin',
+  kts: 'kotlin', less: 'less', lua: 'lua', m: 'objective-c', md: 'markdown',
+  mdx: 'mdx', mjs: 'javascript', mm: 'objective-c', pas: 'pascal', php: 'php',
+  pl: 'perl', pm: 'perl', properties: 'ini', proto: 'protobuf', ps1: 'powershell',
+  pug: 'pug', py: 'python', r: 'r', razor: 'razor', rb: 'ruby', rs: 'rust',
+  sass: 'scss', scala: 'scala', scss: 'scss', sh: 'shell', sol: 'solidity',
+  sql: 'sql', svelte: 'html', svg: 'xml', swift: 'swift', tf: 'hcl', tfvars: 'hcl',
+  toml: 'ini', ts: 'typescript', tsx: 'typescript', txt: 'plaintext', vue: 'html',
+  xml: 'xml', yaml: 'yaml', yml: 'yaml', zig: 'plaintext',
+}
+
+export const supportedLanguages = [
+  'JavaScript', 'TypeScript', 'Python', 'Rust', 'Go', 'Java', 'C', 'C++', 'C#',
+  'PHP', 'Ruby', 'Kotlin', 'Swift', 'Dart', 'Lua', 'Shell', 'PowerShell', 'SQL',
+  'HTML', 'CSS', 'Sass', 'Less', 'JSON', 'YAML', 'XML', 'Markdown', 'GraphQL',
+  'Dockerfile', 'Terraform', 'Elixir', 'F#', 'Scala', 'R', 'Perl', 'Julia',
+  'Solidity', 'Clojure', 'Pascal', 'Objective-C', 'Handlebars', 'Vue', 'Svelte',
+]
+
+export const languageForPath = (path: string) => {
+  const name = fileName(path)
+  if (name === 'Dockerfile' || name === 'Containerfile') return 'dockerfile'
+  const extension = name.includes('.') ? name.split('.').pop()?.toLowerCase() || '' : ''
+  return languageByExtension[extension] || 'plaintext'
+}
+
 export const fileIconClass = (path: string) => {
-  const ext = path.split('.').pop()?.toLowerCase()
-  if (path === 'package.json') return 'npm'
-  if (ext === 'js' || ext === 'jsx') return 'js'
-  if (ext === 'ts' || ext === 'tsx') return 'ts'
-  if (ext === 'css' || ext === 'scss') return 'css'
-  if (ext === 'html') return 'html'
-  if (ext === 'json') return 'json'
-  if (ext === 'md') return 'md'
+  const language = languageForPath(path)
+  const name = fileName(path)
+  if (name === 'package.json') return 'npm'
+  if (['javascript'].includes(language)) return 'js'
+  if (language === 'typescript') return 'ts'
+  if (['css', 'scss', 'less'].includes(language)) return 'css'
+  if (['html', 'handlebars', 'pug'].includes(language)) return 'html'
+  if (['json', 'yaml', 'ini'].includes(language)) return 'data'
+  if (language === 'markdown' || language === 'mdx') return 'md'
+  if (['python', 'ruby', 'php', 'perl', 'r', 'julia'].includes(language)) return 'script'
+  if (['rust', 'go', 'java', 'kotlin', 'swift', 'dart', 'scala', 'c', 'cpp', 'csharp'].includes(language)) return 'native'
+  if (['shell', 'powershell', 'bat'].includes(language)) return 'shell'
+  if (['sql', 'graphql', 'hcl'].includes(language)) return 'query'
+  if (language === 'dockerfile') return 'docker'
   return 'file'
 }
 
 export const symbolsFor = (file?: WorkspaceFile) => {
   if (!file) return []
-  if (file.language === 'css') {
-    return [...file.content.matchAll(/(?:^|\n)([^@\n][^{\n]+)\s*\{/g)].slice(0, 7).map((match) => ({
+  if (['css', 'scss', 'less'].includes(file.language)) {
+    return [...file.content.matchAll(/(?:^|\n)([^@\n][^{\n]+)\s*\{/g)].slice(0, 10).map((match) => ({
       type: 'class',
       label: match[1].trim().split(',')[0],
     }))
   }
-  if (file.language === 'html') {
-    return [...file.content.matchAll(/<(main|nav|section|footer|h1)(?:\s[^>]*)?>/g)].map((match) => ({
+  if (['html', 'handlebars'].includes(file.language)) {
+    return [...file.content.matchAll(/<(main|nav|section|article|header|footer|form|h[1-6])(?:\s[^>]*)?>/g)].slice(0, 10).map((match) => ({
       type: 'html',
       label: match[1],
     }))
   }
-  return [...file.content.matchAll(/(?:function|const|let|class)\s+([A-Za-z_$][\w$]*)/g)].slice(0, 8).map((match) => ({
-    type: match[0].startsWith('function') ? 'function' : 'variable',
-    label: match[1],
+  const expression = /(?:function|class|interface|enum|struct|def|fn|func)\s+([A-Za-z_$][\w$]*)|(?:const|let|var)\s+([A-Za-z_$][\w$]*)/g
+  return [...file.content.matchAll(expression)].slice(0, 12).map((match) => ({
+    type: /function|def|fn|func/.test(match[0]) ? 'function' : 'symbol',
+    label: match[1] || match[2],
   }))
 }

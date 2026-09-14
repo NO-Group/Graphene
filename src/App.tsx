@@ -47,7 +47,7 @@ import {
   X,
   Zap,
 } from 'lucide-react'
-import { defaultFiles, fileIconClass, fileName, symbolsFor, type WorkspaceFile } from './workspace'
+import { defaultFiles, fileIconClass, fileName, languageForPath, supportedLanguages, symbolsFor, type WorkspaceFile } from './workspace'
 import './styles.css'
 
 type Activity = 'explorer' | 'search' | 'source' | 'extensions'
@@ -57,6 +57,8 @@ type SettingsState = {
   wordWrap: boolean
   minimap: boolean
   autosave: boolean
+  stickyScroll: boolean
+  renderWhitespace: boolean
 }
 
 type TreeNode = {
@@ -75,6 +77,8 @@ const defaultSettings: SettingsState = {
   wordWrap: false,
   minimap: true,
   autosave: false,
+  stickyScroll: true,
+  renderWhitespace: false,
 }
 
 function loadFiles() {
@@ -126,7 +130,8 @@ function buildTree(files: WorkspaceFile[]): TreeNode[] {
 function FileGlyph({ path }: { path: string }) {
   const kind = fileIconClass(path)
   const labels: Record<string, string> = {
-    js: 'JS', ts: 'TS', css: '#', html: '<>', json: '{}', md: 'M↓', npm: '⬡', file: '·',
+    js: 'JS', ts: 'TS', css: '#', html: '<>', data: '{}', md: 'M↓', npm: '⬡',
+    script: 'λ', native: '◆', shell: '$_', query: 'Q', docker: '▣', file: '·',
   }
   return <span className={`file-glyph ${kind}`}>{labels[kind]}</span>
 }
@@ -164,11 +169,13 @@ function ExplorerTree({
   activePath,
   openFile,
   dirty,
+  onFileContext,
 }: {
   files: WorkspaceFile[]
   activePath: string
   openFile: (path: string) => void
   dirty: Set<string>
+  onFileContext: (event: React.MouseEvent, path: string) => void
 }) {
   const [expanded, setExpanded] = useState(() => new Set(['src', 'src/utils']))
   const tree = useMemo(() => buildTree(files), [files])
@@ -203,6 +210,7 @@ function ExplorerTree({
         className={`tree-row file-row ${activePath === node.path ? 'selected' : ''}`}
         style={{ paddingLeft: 26 + depth * 14 }}
         onClick={() => openFile(node.path)}
+        onContextMenu={(event) => onFileContext(event, node.path)}
       >
         <FileGlyph path={node.path} />
         <span className="tree-label">{node.name}</span>
@@ -265,13 +273,18 @@ export default function App() {
   const [settings, setSettings] = useState<SettingsState>(loadSettings)
   const [newFileOpen, setNewFileOpen] = useState(false)
   const [newFileName, setNewFileName] = useState('')
+  const [renameTarget, setRenameTarget] = useState<string | null>(null)
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; path: string } | null>(null)
+  const [sidePreview, setSidePreview] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [commitMessage, setCommitMessage] = useState('')
+  const [gitInfo, setGitInfo] = useState<GitStatusResult>({ isRepository: false, branch: 'main', changes: [], error: '' })
+  const [editorInstance, setEditorInstance] = useState<any>(null)
   const [toast, setToast] = useState('')
   const [menuOpen, setMenuOpen] = useState<string | null>(null)
   const [terminalLines, setTerminalLines] = useState<Array<{ text: string; kind?: string }>>([
-    { text: 'Tungsten Shell 0.1.0  ·  web sandbox', kind: 'muted' },
-    { text: 'Workspace restored in 184ms. Type “help” for available commands.', kind: 'success' },
+    { text: `Tungsten Shell 0.3.0  ·  ${window.tungsten ? 'desktop process runner' : 'web sandbox'}`, kind: 'muted' },
+    { text: `${supportedLanguages.length} language grammars loaded. Type “help” for available commands.`, kind: 'success' },
   ])
   const [terminalInput, setTerminalInput] = useState('')
   const [history, setHistory] = useState<string[]>([])
@@ -280,16 +293,20 @@ export default function App() {
   const terminalInputRef = useRef<HTMLInputElement>(null)
   const paletteInputRef = useRef<HTMLInputElement>(null)
   const newFileInputRef = useRef<HTMLInputElement>(null)
+  const restoredWorkspaceRef = useRef(false)
 
   const activeFile = files.find((file) => file.path === activePath)
   const symbols = useMemo(() => symbolsFor(activeFile), [activeFile])
+  const runEditorAction = useCallback((action: string) => {
+    void editorInstance?.getAction(action)?.run()
+  }, [editorInstance])
 
   const notify = useCallback((message: string) => {
     setToast(message)
     window.setTimeout(() => setToast(''), 2200)
   }, [])
 
-  const save = useCallback((path?: string) => {
+  const save = useCallback(async (path?: string) => {
     const targets = path ? [path] : [...dirty]
     const finishSave = () => {
       if (path) {
@@ -303,24 +320,45 @@ export default function App() {
         setDirty(new Set())
         notify('All files saved')
       }
+      if (window.tungsten && workspaceRoot) window.tungsten.gitStatus().then(setGitInfo).catch(() => undefined)
     }
 
-    if (window.tungsten && workspaceRoot) {
-      Promise.all(targets.map((target) => {
-        const file = files.find((item) => item.path === target)
-        return file ? window.tungsten!.writeFile(file.path, file.content) : Promise.resolve({ ok: true as const })
-      })).then(finishSave).catch((error: Error) => notify(`Save failed: ${error.message}`))
-      return
+    try {
+      if (window.tungsten && workspaceRoot) {
+        await Promise.all(targets.map((target) => {
+          const file = files.find((item) => item.path === target)
+          return file ? window.tungsten!.writeFile(file.path, file.content) : Promise.resolve({ ok: true as const })
+        }))
+      } else {
+        localStorage.setItem(WORKSPACE_KEY, JSON.stringify(files))
+      }
+      finishSave()
+    } catch (error) {
+      notify(`Save failed: ${(error as Error).message}`)
+      throw error
     }
-
-    localStorage.setItem(WORKSPACE_KEY, JSON.stringify(files))
-    finishSave()
   }, [dirty, files, notify, workspaceRoot])
 
   const openFile = useCallback((path: string) => {
     setOpenTabs((tabs) => tabs.includes(path) ? tabs : [...tabs, path])
     setActivePath(path)
   }, [])
+
+  const applyDesktopWorkspace = useCallback((result: DesktopWorkspaceResult, restored = false) => {
+    if (result.canceled || !result.files) return
+    const preferred = result.files.find((file) => file.path.toLowerCase() === 'readme.md')
+      || result.files.find((file) => file.path === 'package.json')
+      || result.files[0]
+    setFiles(result.files)
+    setWorkspaceName(result.name || 'workspace')
+    setWorkspaceRoot(result.path || '')
+    setOpenTabs(preferred ? [preferred.path] : [])
+    setActivePath(preferred?.path || '')
+    setDirty(new Set())
+    window.tungsten?.gitStatus().then(setGitInfo).catch(() => undefined)
+    setTerminalLines((lines) => [...lines, { text: `${restored ? 'Restored' : 'Opened'} ${result.path} · ${result.files!.length} text files indexed`, kind: 'success' }])
+    notify(result.truncated ? 'Workspace opened; 4,000-file index limit reached' : `${result.name} ${restored ? 'restored' : 'opened'}`)
+  }, [notify])
 
   const openDesktopFolder = useCallback(async () => {
     if (!window.tungsten) {
@@ -329,23 +367,11 @@ export default function App() {
     }
 
     try {
-      const result = await window.tungsten.openFolder()
-      if (result.canceled || !result.files) return
-      const preferred = result.files.find((file) => file.path.toLowerCase() === 'readme.md')
-        || result.files.find((file) => file.path === 'package.json')
-        || result.files[0]
-      setFiles(result.files)
-      setWorkspaceName(result.name || 'workspace')
-      setWorkspaceRoot(result.path || '')
-      setOpenTabs(preferred ? [preferred.path] : [])
-      setActivePath(preferred?.path || '')
-      setDirty(new Set())
-      setTerminalLines((lines) => [...lines, { text: `Opened ${result.path} · ${result.files!.length} text files indexed`, kind: 'success' }])
-      notify(result.truncated ? 'Workspace opened; file index limit reached' : `${result.name} opened`)
+      applyDesktopWorkspace(await window.tungsten.openFolder())
     } catch (error) {
       notify(`Could not open folder: ${(error as Error).message}`)
     }
-  }, [notify])
+  }, [applyDesktopWorkspace, notify])
 
   const closeTab = (path: string) => {
     const index = openTabs.indexOf(path)
@@ -383,27 +409,93 @@ export default function App() {
     ])
   }, [notify, openTabs])
 
-  const createFile = () => {
-    const path = newFileName.trim().replace(/^\//, '')
-    if (!path) return
-    if (files.some((file) => file.path === path)) {
+  const openNewFileDialog = () => {
+    setRenameTarget(null)
+    setNewFileName('')
+    setNewFileOpen(true)
+  }
+
+  const createFile = async () => {
+    const path = newFileName.trim().replace(/^[/\\]+/, '').replace(/\\/g, '/')
+    if (!path || path.split('/').includes('..')) {
+      notify('Enter a valid path inside the workspace')
+      return
+    }
+    if (files.some((file) => file.path === path && file.path !== renameTarget)) {
       notify('A file with that path already exists')
       return
     }
-    const ext = path.split('.').pop() || ''
-    const languages: Record<string, string> = {
-      js: 'javascript', jsx: 'javascript', ts: 'typescript', tsx: 'typescript', css: 'css', html: 'html', json: 'json', md: 'markdown',
+
+    try {
+      if (renameTarget) {
+        if (window.tungsten && workspaceRoot) await window.tungsten.renamePath(renameTarget, path)
+        setFiles((current) => current.map((file) => file.path === renameTarget ? { ...file, path, language: languageForPath(path) } : file))
+        setOpenTabs((tabs) => tabs.map((tab) => tab === renameTarget ? path : tab))
+        setActivePath((active) => active === renameTarget ? path : active)
+        setDirty((current) => {
+          const next = new Set(current)
+          if (next.delete(renameTarget)) next.add(path)
+          return next
+        })
+        notify(`${fileName(renameTarget)} renamed to ${fileName(path)}`)
+      } else {
+        if (window.tungsten && workspaceRoot) await window.tungsten.writeFile(path, '')
+        setFiles((current) => [...current, { path, content: '', language: languageForPath(path) }])
+        setDirty((current) => new Set(current).add(path))
+        openFile(path)
+        notify(`${fileName(path)} created`)
+      }
+      setNewFileName('')
+      setRenameTarget(null)
+      setNewFileOpen(false)
+    } catch (error) {
+      notify(`File operation failed: ${(error as Error).message}`)
     }
-    setFiles((current) => [...current, { path, content: '', language: languages[ext] || 'plaintext' }])
-    setDirty((current) => new Set(current).add(path))
-    if (window.tungsten && workspaceRoot) {
-      window.tungsten.writeFile(path, '').catch((error: Error) => notify(`Could not create file: ${error.message}`))
-    }
-    openFile(path)
-    setNewFileName('')
-    setNewFileOpen(false)
-    notify(`${fileName(path)} created`)
   }
+
+  const renameFile = (path: string) => {
+    setRenameTarget(path)
+    setNewFileName(path)
+    setNewFileOpen(true)
+    setContextMenu(null)
+  }
+
+  const deleteFile = async (path: string) => {
+    setContextMenu(null)
+    if (!window.confirm(`Delete ${path}? This cannot be undone.`)) return
+    try {
+      if (window.tungsten && workspaceRoot) await window.tungsten.deletePath(path)
+      setFiles((current) => current.filter((file) => file.path !== path))
+      setDirty((current) => { const next = new Set(current); next.delete(path); return next })
+      const remainingTabs = openTabs.filter((tab) => tab !== path)
+      setOpenTabs(remainingTabs)
+      if (activePath === path) setActivePath(remainingTabs[0] || '')
+      notify(`${fileName(path)} deleted`)
+    } catch (error) {
+      notify(`Delete failed: ${(error as Error).message}`)
+    }
+  }
+
+  const refreshWorkspace = useCallback(async () => {
+    if (!window.tungsten || !workspaceRoot) {
+      notify('Open a desktop workspace before refreshing')
+      return
+    }
+    if (dirty.size && !window.confirm('Refreshing will discard unsaved editor changes. Continue?')) return
+    try {
+      const result = await window.tungsten.refreshWorkspace()
+      if (result.files) {
+        const remaining = openTabs.filter((tab) => tab === PREVIEW_PATH || result.files!.some((file) => file.path === tab))
+        setFiles(result.files)
+        setOpenTabs(remaining)
+        setActivePath(remaining.includes(activePath) ? activePath : remaining[0] || result.files[0]?.path || '')
+        setDirty(new Set())
+        notify(`${result.files.length} files refreshed from disk`)
+      }
+    } catch (error) {
+      notify(`Refresh failed: ${(error as Error).message}`)
+    }
+  }, [activePath, dirty.size, notify, openTabs, workspaceRoot])
 
   const resetWorkspace = useCallback(() => {
     setFiles(defaultFiles)
@@ -412,9 +504,39 @@ export default function App() {
     setOpenTabs(['README.md', 'index.html', 'src/main.js'])
     setActivePath('src/main.js')
     setDirty(new Set())
+    setGitInfo({ isRepository: false, branch: 'main', changes: [], error: '' })
     localStorage.removeItem(WORKSPACE_KEY)
     notify('Workspace restored to defaults')
   }, [notify])
+
+  const refreshGit = useCallback(async () => {
+    if (!window.tungsten || !workspaceRoot) return
+    try {
+      setGitInfo(await window.tungsten.gitStatus())
+    } catch (error) {
+      setGitInfo({ isRepository: false, branch: '', changes: [], error: (error as Error).message })
+    }
+  }, [workspaceRoot])
+
+  const commitChanges = async () => {
+    if (!commitMessage.trim()) return
+    if (!window.tungsten || !workspaceRoot) {
+      setDirty(new Set())
+      setCommitMessage('')
+      notify('Demo changes committed locally')
+      return
+    }
+    try {
+      await save()
+      const result = await window.tungsten.gitCommit(commitMessage)
+      setGitInfo(result.status)
+      setCommitMessage('')
+      setTerminalLines((lines) => [...lines, { text: result.output, kind: 'success' }])
+      notify('Changes committed')
+    } catch (error) {
+      notify(`Commit failed: ${(error as Error).message}`)
+    }
+  }
 
   const runTerminalCommand = (raw: string) => {
     const command = raw.trim()
@@ -472,17 +594,23 @@ export default function App() {
     setTerminalLines((lines) => [...lines, ...base])
   }
 
-  const commands = useMemo(() => [
+  const commands = [
     { label: 'File: Open Folder', detail: window.tungsten ? 'Open a local project from this computer' : 'Available in the desktop app', icon: FolderOpen, keys: ['⌘', 'O'], action: openDesktopFolder },
-    { label: 'File: New File', detail: 'Create a file in the workspace', icon: File, keys: ['⌘', 'N'], action: () => setNewFileOpen(true) },
-    { label: 'File: Save Active File', detail: activePath && activePath !== PREVIEW_PATH ? fileName(activePath) : 'No editable file active', icon: Check, keys: ['⌘', 'S'], action: () => activePath && save(activePath) },
-    { label: 'File: Save All', detail: `${dirty.size} unsaved change${dirty.size === 1 ? '' : 's'}`, icon: Copy, action: () => save() },
+    { label: 'File: New File', detail: 'Create a file in the workspace', icon: File, keys: ['⌘', 'N'], action: openNewFileDialog },
+    { label: 'File: Rename Active File', detail: activeFile?.path || 'No editable file active', icon: FileCode2, action: () => { if (activeFile) renameFile(activeFile.path) } },
+    { label: 'File: Delete Active File', detail: activeFile?.path || 'No editable file active', icon: Trash2, action: () => { if (activeFile) void deleteFile(activeFile.path) } },
+    { label: 'File: Save Active File', detail: activePath && activePath !== PREVIEW_PATH ? fileName(activePath) : 'No editable file active', icon: Check, keys: ['⌘', 'S'], action: () => { if (activePath) void save(activePath).catch(() => undefined) } },
+    { label: 'File: Save All', detail: `${dirty.size} unsaved change${dirty.size === 1 ? '' : 's'}`, icon: Copy, action: () => { void save().catch(() => undefined) } },
+    { label: 'Editor: Format Document', detail: 'Run the registered Monaco formatter', icon: Braces, keys: ['⇧', '⌥', 'F'], action: () => runEditorAction('editor.action.formatDocument') },
+    { label: 'Editor: Toggle Word Wrap', detail: settings.wordWrap ? 'Word wrap is on' : 'Word wrap is off', icon: ChevronsDownUp, action: () => setSettings((current) => ({ ...current, wordWrap: !current.wordWrap })) },
     { label: 'Run: Open Live Preview', detail: 'Build and run the current workspace', icon: Play, keys: ['⌃', '↵'], action: runProject },
+    { label: 'View: Toggle Side Preview', detail: sidePreview ? 'Close the side preview' : 'Preview beside the editor', icon: Columns2, action: () => setSidePreview((value) => !value) },
     { label: 'View: Toggle Primary Side Bar', detail: sidebarVisible ? 'Hide the explorer' : 'Show the explorer', icon: PanelLeftClose, keys: ['⌘', 'B'], action: () => setSidebarVisible((value) => !value) },
     { label: 'View: Toggle Panel', detail: panelOpen ? 'Hide the bottom panel' : 'Show the bottom panel', icon: PanelBottomOpen, keys: ['⌘', 'J'], action: () => setPanelOpen((value) => !value) },
+    { label: 'Workspace: Refresh From Disk', detail: 'Reload files changed by other programs', icon: RefreshCw, action: refreshWorkspace },
     { label: 'Preferences: Open Settings', detail: 'Editor and workspace preferences', icon: Settings, keys: ['⌘', ','], action: () => setSettingsOpen(true) },
     { label: 'Workspace: Reset Starter', detail: 'Restore all starter files', icon: RotateCcw, action: resetWorkspace },
-  ], [activePath, dirty.size, openDesktopFolder, panelOpen, resetWorkspace, runProject, save, sidebarVisible])
+  ]
 
   const paletteItems = palette.mode === 'files'
     ? files.filter((file) => file.path.toLowerCase().includes(paletteQuery.toLowerCase())).map((file) => ({
@@ -497,12 +625,20 @@ export default function App() {
   }
 
   useEffect(() => {
+    if (!window.tungsten || restoredWorkspaceRef.current) return
+    restoredWorkspaceRef.current = true
+    window.tungsten.restoreWorkspace()
+      .then((result) => applyDesktopWorkspace(result, true))
+      .catch(() => undefined)
+  }, [applyDesktopWorkspace])
+
+  useEffect(() => {
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings))
   }, [settings])
 
   useEffect(() => {
     if (!settings.autosave || !dirty.size) return
-    const timer = window.setTimeout(() => save(), 900)
+    const timer = window.setTimeout(() => { void save().catch(() => undefined) }, 900)
     return () => window.clearTimeout(timer)
   }, [dirty, files, save, settings.autosave])
 
@@ -521,14 +657,18 @@ export default function App() {
   useEffect(() => {
     const keydown = (event: KeyboardEvent) => {
       const mod = event.ctrlKey || event.metaKey
-      if (mod && event.shiftKey && event.key.toLowerCase() === 'p') {
+      if (event.shiftKey && event.altKey && event.key.toLowerCase() === 'f') {
+        event.preventDefault(); runEditorAction('editor.action.formatDocument')
+      } else if (mod && event.shiftKey && event.key.toLowerCase() === 'p') {
         event.preventDefault(); setPalette({ open: true, mode: 'commands' }); setPaletteQuery('')
       } else if (mod && event.key.toLowerCase() === 'p') {
         event.preventDefault(); setPalette({ open: true, mode: 'files' }); setPaletteQuery('')
+      } else if (mod && event.shiftKey && event.key.toLowerCase() === 'r') {
+        event.preventDefault(); void refreshWorkspace()
       } else if (mod && event.key.toLowerCase() === 'o') {
-        event.preventDefault(); openDesktopFolder()
+        event.preventDefault(); void openDesktopFolder()
       } else if (mod && event.key.toLowerCase() === 's') {
-        event.preventDefault(); if (activePath && activePath !== PREVIEW_PATH) save(activePath)
+        event.preventDefault(); if (activePath && activePath !== PREVIEW_PATH) void save(activePath).catch(() => undefined)
       } else if (mod && event.key.toLowerCase() === 'b') {
         event.preventDefault(); setSidebarVisible((value) => !value)
       } else if (mod && event.key.toLowerCase() === 'j') {
@@ -538,12 +678,12 @@ export default function App() {
       } else if (event.ctrlKey && event.key === '`') {
         event.preventDefault(); setPanelOpen((value) => !value)
       } else if (event.key === 'Escape') {
-        setPalette((current) => ({ ...current, open: false })); setSettingsOpen(false); setNewFileOpen(false); setMenuOpen(null)
+        setPalette((current) => ({ ...current, open: false })); setSettingsOpen(false); setNewFileOpen(false); setRenameTarget(null); setMenuOpen(null); setContextMenu(null)
       }
     }
     window.addEventListener('keydown', keydown)
     return () => window.removeEventListener('keydown', keydown)
-  }, [activePath, openDesktopFolder, runProject, save])
+  }, [activePath, openDesktopFolder, refreshWorkspace, runEditorAction, runProject, save])
 
   const startSidebarResize = (event: React.MouseEvent) => {
     event.preventDefault()
@@ -615,6 +755,13 @@ export default function App() {
     return files.flatMap((file) => file.content.split('\n').map((line, index) => ({ file, line, index })).filter((result) => result.line.toLowerCase().includes(query))).slice(0, 40)
   }, [files, searchQuery])
 
+  const sourceChanges = useMemo(() => {
+    const changes = new Map<string, string>()
+    if (gitInfo.isRepository) gitInfo.changes.forEach((change) => changes.set(change.path, change.status))
+    dirty.forEach((path) => changes.set(path, changes.get(path) || 'M'))
+    return [...changes].map(([path, status]) => ({ path, status }))
+  }, [dirty, gitInfo])
+
   const sidebarContent = () => {
     if (activity === 'search') return (
       <>
@@ -631,14 +778,23 @@ export default function App() {
     )
     if (activity === 'source') return (
       <>
-        <div className="sidebar-title"><span>SOURCE CONTROL</span><Ellipsis size={16} /></div>
+        <div className="sidebar-title"><span>SOURCE CONTROL</span><span className="branch-label"><GitBranch size={11} />{gitInfo.branch || 'no repository'}</span></div>
         <div className="commit-box">
-          <textarea value={commitMessage} onChange={(event) => setCommitMessage(event.target.value)} placeholder="Message (⌘Enter to commit)" />
-          <button disabled={!commitMessage.trim()} onClick={() => { setDirty(new Set()); setCommitMessage(''); notify('Changes committed locally') }}><Check size={14} /> Commit</button>
+          <textarea
+            value={commitMessage}
+            onChange={(event) => setCommitMessage(event.target.value)}
+            onKeyDown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') void commitChanges() }}
+            placeholder="Message (⌘Enter to commit)"
+          />
+          <button disabled={!commitMessage.trim() || (!sourceChanges.length && window.tungsten !== undefined)} onClick={() => { void commitChanges() }}><Check size={14} /> Commit all changes</button>
         </div>
-        <div className="section-heading"><span>CHANGES</span><span className="count-pill">{dirty.size}</span><Plus size={14} /><RefreshCw size={13} /></div>
-        {dirty.size === 0 ? <div className="sidebar-empty"><GitCommitHorizontal size={25} /><span>Working tree is clean</span></div> : [...dirty].map((path) => (
-          <button className="change-row" key={path} onClick={() => openFile(path)}><FileGlyph path={path} /><span>{fileName(path)}</span><small>{path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : ''}</small><b>M</b></button>
+        <div className="section-heading"><span>CHANGES</span><span className="count-pill">{sourceChanges.length}</span><TipButton label="Refresh Git status" onClick={refreshGit}><RefreshCw size={13} /></TipButton></div>
+        {!gitInfo.isRepository && window.tungsten && workspaceRoot ? (
+          <div className="sidebar-empty"><GitCommitHorizontal size={25} /><span>{gitInfo.error || 'This folder is not a Git repository'}</span></div>
+        ) : sourceChanges.length === 0 ? (
+          <div className="sidebar-empty"><GitCommitHorizontal size={25} /><span>Working tree is clean</span></div>
+        ) : sourceChanges.map(({ path, status }) => (
+          <button className="change-row" key={path} onClick={() => files.some((file) => file.path === path) && openFile(path)}><FileGlyph path={path} /><span>{fileName(path)}</span><small>{path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : ''}</small><b>{status}</b></button>
         ))}
       </>
     )
@@ -646,8 +802,9 @@ export default function App() {
       <>
         <div className="sidebar-title"><span>EXTENSIONS</span><Ellipsis size={16} /></div>
         <div className="search-box-wrap"><Search size={13} /><input placeholder="Search extensions" /></div>
-        <div className="section-heading"><span>INSTALLED</span><span className="count-pill">3</span></div>
+        <div className="section-heading"><span>INSTALLED</span><span className="count-pill">4</span></div>
         {[
+          ['Language Core', `${supportedLanguages.length} bundled language grammars`, 'L'],
           ['Prettier', 'Opinionated code formatter', 'P'],
           ['ESLint', 'Integrates ESLint into Tungsten', 'E'],
           ['GitLens', 'Supercharge Git capabilities', 'G'],
@@ -657,8 +814,8 @@ export default function App() {
     return (
       <>
         <div className="sidebar-title"><span>EXPLORER</span><Ellipsis size={16} /></div>
-        <div className="project-heading"><ChevronDown size={13} /><strong>{workspaceName.toUpperCase()}</strong><span /><TipButton label="Open folder" onClick={openDesktopFolder}><FolderOpen size={14} /></TipButton><TipButton label="New file" onClick={() => setNewFileOpen(true)}><File size={14} /><Plus size={8} className="mini-plus" /></TipButton><TipButton label="Collapse folders"><ChevronsDownUp size={14} /></TipButton></div>
-        <ExplorerTree files={files} activePath={activePath} openFile={openFile} dirty={dirty} />
+        <div className="project-heading"><ChevronDown size={13} /><strong>{workspaceName.toUpperCase()}</strong><span /><TipButton label="Open folder" onClick={openDesktopFolder}><FolderOpen size={14} /></TipButton><TipButton label="Refresh workspace" onClick={refreshWorkspace}><RefreshCw size={13} /></TipButton><TipButton label="New file" onClick={openNewFileDialog}><File size={14} /><Plus size={8} className="mini-plus" /></TipButton></div>
+        <ExplorerTree files={files} activePath={activePath} openFile={openFile} dirty={dirty} onFileContext={(event, path) => { event.preventDefault(); setContextMenu({ x: event.clientX, y: event.clientY, path }) }} />
         <div className="outline-section">
           <div className="section-heading"><ChevronDown size={13} /><span>OUTLINE</span><span /><Ellipsis size={14} /></div>
           {symbols.length ? <div className="symbols-list">{symbols.map((symbol, index) => <div key={`${symbol.label}-${index}`}><Braces size={13} /><span>{symbol.label}</span></div>)}</div> : <p className="outline-empty">No symbols found</p>}
@@ -671,27 +828,33 @@ export default function App() {
   const menus: Record<string, Array<{ label: string; shortcut?: string; action: () => void; divider?: boolean }>> = {
     File: [
       { label: 'Open Folder…', shortcut: 'Ctrl+O', action: openDesktopFolder },
-      { label: 'New File…', shortcut: 'Ctrl+N', action: () => setNewFileOpen(true) },
+      { label: 'New File…', shortcut: 'Ctrl+N', action: openNewFileDialog },
       { label: 'Open File…', shortcut: 'Ctrl+P', action: () => setPalette({ open: true, mode: 'files' }) },
-      { label: 'Save', shortcut: 'Ctrl+S', action: () => activePath && save(activePath), divider: true },
-      { label: 'Save All', shortcut: 'Ctrl+K S', action: () => save() },
+      { label: 'Rename Active File…', shortcut: 'F2', action: () => { if (activeFile) renameFile(activeFile.path) } },
+      { label: 'Delete Active File…', action: () => { if (activeFile) void deleteFile(activeFile.path) } },
+      { label: 'Save', shortcut: 'Ctrl+S', action: () => { if (activePath) void save(activePath).catch(() => undefined) }, divider: true },
+      { label: 'Save All', shortcut: 'Ctrl+K S', action: () => { void save().catch(() => undefined) } },
     ],
     Edit: [
       { label: 'Command Palette…', shortcut: 'Ctrl+Shift+P', action: () => setPalette({ open: true, mode: 'commands' }) },
       { label: 'Find in Files', shortcut: 'Ctrl+Shift+F', action: () => { setActivity('search'); setSidebarVisible(true) } },
+      { label: 'Format Document', shortcut: 'Shift+Alt+F', action: () => runEditorAction('editor.action.formatDocument') },
     ],
     Selection: [
-      { label: 'Select All', shortcut: 'Ctrl+A', action: () => notify('Use Ctrl+A inside the editor to select all') },
-      { label: 'Expand Selection', shortcut: 'Shift+Alt+→', action: () => notify('Selection expanded') },
+      { label: 'Select All', shortcut: 'Ctrl+A', action: () => runEditorAction('editor.action.selectAll') },
+      { label: 'Expand Selection', shortcut: 'Shift+Alt+→', action: () => runEditorAction('editor.action.smartSelect.expand') },
     ],
     Go: [
       { label: 'Go to File…', shortcut: 'Ctrl+P', action: () => setPalette({ open: true, mode: 'files' }) },
-      { label: 'Go to Symbol…', shortcut: 'Ctrl+Shift+O', action: () => notify(`${symbols.length} symbols in the active file`) },
+      { label: 'Go to Symbol…', shortcut: 'Ctrl+Shift+O', action: () => runEditorAction('editor.action.quickOutline') },
+      { label: 'Go to Line…', shortcut: 'Ctrl+G', action: () => runEditorAction('editor.action.gotoLine') },
     ],
     View: [
       { label: 'Primary Side Bar', shortcut: 'Ctrl+B', action: () => setSidebarVisible((value) => !value) },
       { label: 'Bottom Panel', shortcut: 'Ctrl+J', action: () => setPanelOpen((value) => !value) },
-      { label: 'Settings', shortcut: 'Ctrl+,', action: () => setSettingsOpen(true), divider: true },
+      { label: 'Side Preview', action: () => setSidePreview((value) => !value) },
+      { label: 'Refresh Workspace', shortcut: 'Ctrl+Shift+R', action: refreshWorkspace, divider: true },
+      { label: 'Settings', shortcut: 'Ctrl+,', action: () => setSettingsOpen(true) },
     ],
     Run: [
       { label: 'Run Project', shortcut: 'Ctrl+Enter', action: runProject },
@@ -708,7 +871,7 @@ export default function App() {
   }
 
   return (
-    <div className="ide" onClick={() => menuOpen && setMenuOpen(null)}>
+    <div className="ide" onClick={() => { if (menuOpen) setMenuOpen(null); if (contextMenu) setContextMenu(null) }}>
       <header className="titlebar">
         <div className="brand-mark" title="Tungsten"><Hammer size={15} strokeWidth={2.4} /></div>
         <button className="menu-mobile"><Menu size={15} /></button>
@@ -729,7 +892,7 @@ export default function App() {
           <TipButton label="Tungsten Copilot"><Bot size={15} /></TipButton>
           <TipButton label={sidebarVisible ? 'Hide primary sidebar' : 'Show primary sidebar'} active={sidebarVisible} onClick={() => setSidebarVisible((value) => !value)}><PanelLeftClose size={15} /></TipButton>
           <TipButton label={panelOpen ? 'Hide panel' : 'Show panel'} active={panelOpen} onClick={() => setPanelOpen((value) => !value)}><PanelBottomClose size={15} /></TipButton>
-          <TipButton label="Split editor"><Columns2 size={15} /></TipButton>
+          <TipButton label="Toggle side preview" active={sidePreview} onClick={() => setSidePreview((value) => !value)}><Columns2 size={15} /></TipButton>
         </div>
       </header>
 
@@ -739,6 +902,7 @@ export default function App() {
             {activityItems.map((item) => {
               const Icon = item.icon
               return <button key={item.id} className={activity === item.id && sidebarVisible ? 'active' : ''} onClick={() => {
+                if (item.id === 'source') void refreshGit()
                 if (activity === item.id) setSidebarVisible((value) => !value)
                 else { setActivity(item.id); setSidebarVisible(true) }
               }} aria-label={item.label} title={item.label}>
@@ -770,7 +934,7 @@ export default function App() {
                 </button>
               })}
             </div>
-            <div className="tab-actions"><TipButton label="Run project" onClick={runProject}><Play size={14} fill="currentColor" /></TipButton><TipButton label="Split editor"><SplitSquareHorizontal size={14} /></TipButton><TipButton label="More actions"><Ellipsis size={15} /></TipButton></div>
+            <div className="tab-actions"><TipButton label="Run project" onClick={runProject}><Play size={14} fill="currentColor" /></TipButton><TipButton label="Toggle side preview" active={sidePreview} onClick={() => setSidePreview((value) => !value)}><SplitSquareHorizontal size={14} /></TipButton><TipButton label="More actions" onClick={() => setPalette({ open: true, mode: 'commands' })}><Ellipsis size={15} /></TipButton></div>
           </div>
 
           {activePath && activePath !== PREVIEW_PATH && <div className="breadcrumbs">
@@ -780,7 +944,7 @@ export default function App() {
           </div>}
 
           <div className="editor-and-panel">
-            <div className="editor-area">
+            <div className={`editor-area ${sidePreview && activeFile && activePath !== PREVIEW_PATH ? 'with-side-preview' : ''}`}>
               {activePath === PREVIEW_PATH ? <Preview html={buildPreview()} onReload={() => notify('Preview refreshed')} /> : activeFile ? (
                 <Editor
                   height="100%"
@@ -821,6 +985,7 @@ export default function App() {
                   }}
                   onChange={updateFile}
                   onMount={(editor) => {
+                    setEditorInstance(editor)
                     editor.onDidChangeCursorPosition((event) => setCursor({ line: event.position.lineNumber, column: event.position.column }))
                     editor.focus()
                   }}
@@ -831,6 +996,8 @@ export default function App() {
                     fontLigatures: true,
                     minimap: { enabled: settings.minimap, maxColumn: 90, renderCharacters: false, scale: 1 },
                     wordWrap: settings.wordWrap ? 'on' : 'off',
+                    renderWhitespace: settings.renderWhitespace ? 'selection' : 'none',
+                    stickyScroll: { enabled: settings.stickyScroll },
                     padding: { top: 14, bottom: 20 },
                     smoothScrolling: true,
                     cursorSmoothCaretAnimation: 'on',
@@ -849,16 +1016,20 @@ export default function App() {
               ) : (
                 <div className="empty-editor">
                   <div className="empty-brand"><Hammer size={41} /></div><h2>TUNGSTEN</h2><p>A development environment forged for focus.</p>
-                  <div className="empty-actions"><button onClick={openDesktopFolder}>Open folder <kbd>⌘O</kbd></button><button onClick={() => setPalette({ open: true, mode: 'files' })}>Quick open <kbd>⌘P</kbd></button><button onClick={() => setNewFileOpen(true)}>New file <kbd>⌘N</kbd></button><button onClick={runProject}>Run project <kbd>⌃↵</kbd></button></div>
+                  <div className="empty-actions"><button onClick={openDesktopFolder}>Open folder <kbd>⌘O</kbd></button><button onClick={() => setPalette({ open: true, mode: 'files' })}>Quick open <kbd>⌘P</kbd></button><button onClick={openNewFileDialog}>New file <kbd>⌘N</kbd></button><button onClick={runProject}>Run project <kbd>⌃↵</kbd></button></div>
                 </div>
               )}
+              {sidePreview && activeFile && activePath !== PREVIEW_PATH && <div className="side-preview-pane">
+                <div className="side-preview-heading"><span><Eye size={12} /> LIVE PREVIEW</span><button title="Close side preview" onClick={() => setSidePreview(false)}><X size={13} /></button></div>
+                <div className="side-preview-content"><Preview html={buildPreview()} onReload={() => notify('Preview refreshed')} /></div>
+              </div>}
             </div>
 
             {panelOpen && <section className="bottom-panel" style={{ height: panelHeight }}>
               <div className="resize-handle horizontal" onMouseDown={startPanelResize} />
               <header className="panel-header">
                 <nav>{['PROBLEMS', 'OUTPUT', 'DEBUG CONSOLE', 'TERMINAL'].map((tab) => <button key={tab} className={panelTab === tab ? 'active' : ''} onClick={() => setPanelTab(tab)}>{tab}{tab === 'PROBLEMS' && <span className="tab-count">0</span>}</button>)}</nav>
-                <div><span className="terminal-name"><TerminalSquare size={13} /> zsh <ChevronDown size={11} /></span><TipButton label="New terminal"><Plus size={14} /></TipButton><TipButton label="Kill terminal" onClick={() => setTerminalLines([])}><Trash2 size={13} /></TipButton><TipButton label="Maximize panel" onClick={() => setPanelHeight((height) => height > 400 ? 225 : Math.round(window.innerHeight * .62))}><Maximize2 size={13} /></TipButton><TipButton label="Close panel" onClick={() => setPanelOpen(false)}><X size={14} /></TipButton></div>
+                <div><span className="terminal-name"><TerminalSquare size={13} /> zsh <ChevronDown size={11} /></span><TipButton label="New terminal" onClick={() => { setPanelTab('TERMINAL'); setTerminalLines((lines) => [...lines, { text: '— new terminal session —', kind: 'muted' }]); window.setTimeout(() => terminalInputRef.current?.focus(), 20) }}><Plus size={14} /></TipButton><TipButton label="Kill terminal" onClick={() => setTerminalLines([])}><Trash2 size={13} /></TipButton><TipButton label="Maximize panel" onClick={() => setPanelHeight((height) => height > 400 ? 225 : Math.round(window.innerHeight * .62))}><Maximize2 size={13} /></TipButton><TipButton label="Close panel" onClick={() => setPanelOpen(false)}><X size={14} /></TipButton></div>
               </header>
               {panelContent()}
             </section>}
@@ -869,8 +1040,8 @@ export default function App() {
       <footer className="statusbar">
         <div>
           <button title="Open a remote window" className="remote-status"><SquareCode size={13} /></button>
-          <button title="Current branch"><GitBranch size={13} /><span>main*</span></button>
-          <button title="Synchronize changes"><RefreshCw size={11} /><span>0</span></button>
+          <button title="Current branch" onClick={() => { setActivity('source'); setSidebarVisible(true); void refreshGit() }}><GitBranch size={13} /><span>{gitInfo.branch || 'main'}{sourceChanges.length ? '*' : ''}</span></button>
+          <button title="Refresh source control" onClick={refreshGit}><RefreshCw size={11} /><span>{sourceChanges.length}</span></button>
           <button title="No errors or warnings"><X size={12} /><span>0</span><CircleAlert size={12} /><span>0</span></button>
         </div>
         <div>
@@ -903,6 +1074,8 @@ export default function App() {
             {[
               ['Word wrap', 'Wrap long lines at the editor viewport.', 'wordWrap'],
               ['Minimap', 'Show a compact overview of the active file.', 'minimap'],
+              ['Sticky scroll', 'Keep surrounding scopes visible while scrolling.', 'stickyScroll'],
+              ['Visible whitespace', 'Reveal spaces and tabs in selected text.', 'renderWhitespace'],
               ['Auto save', 'Save changes after a short delay.', 'autosave'],
             ].map(([title, description, key]) => <label className="toggle-setting" key={key}><div><strong>{title}</strong><span>{description}</span></div><input type="checkbox" checked={settings[key as keyof SettingsState] as boolean} onChange={(event) => setSettings({ ...settings, [key]: event.target.checked })} /><span className="toggle-track"><i /></span></label>)}
           </div>
@@ -910,12 +1083,24 @@ export default function App() {
         </section>
       </div>}
 
-      {newFileOpen && <div className="overlay" onMouseDown={() => setNewFileOpen(false)}>
+      {newFileOpen && <div className="overlay" onMouseDown={() => { setNewFileOpen(false); setRenameTarget(null) }}>
         <section className="new-file-modal" onMouseDown={(event) => event.stopPropagation()}>
-          <div className="new-file-icon"><FileCode2 size={20} /></div><div><h2>Create a new file</h2><p>Use a path to place it inside a folder.</p></div>
-          <label>FILE PATH<input ref={newFileInputRef} value={newFileName} onChange={(event) => setNewFileName(event.target.value)} onKeyDown={(event) => event.key === 'Enter' && createFile()} placeholder="src/components/button.tsx" /></label>
-          <footer><button onClick={() => setNewFileOpen(false)}>Cancel</button><button className="primary" disabled={!newFileName.trim()} onClick={createFile}>Create file</button></footer>
+          <div className="new-file-icon"><FileCode2 size={20} /></div><div><h2>{renameTarget ? 'Rename file' : 'Create a new file'}</h2><p>{renameTarget ? 'Change the file name or move it to another folder.' : 'Use a path to place it inside a folder.'}</p></div>
+          <label>FILE PATH<input ref={newFileInputRef} value={newFileName} onChange={(event) => setNewFileName(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') void createFile() }} placeholder="src/components/button.tsx" /></label>
+          <footer><button onClick={() => { setNewFileOpen(false); setRenameTarget(null) }}>Cancel</button><button className="primary" disabled={!newFileName.trim()} onClick={() => { void createFile() }}>{renameTarget ? 'Rename file' : 'Create file'}</button></footer>
         </section>
+      </div>}
+
+      {contextMenu && <div
+        className="context-menu"
+        style={{ left: Math.min(contextMenu.x, window.innerWidth - 190), top: Math.min(contextMenu.y, window.innerHeight - 220) }}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <button onClick={() => { openFile(contextMenu.path); setContextMenu(null) }}><FileCode2 size={14} /><span>Open</span><kbd>Enter</kbd></button>
+        <button onClick={() => renameFile(contextMenu.path)}><Braces size={14} /><span>Rename…</span><kbd>F2</kbd></button>
+        <button onClick={() => { void navigator.clipboard.writeText(contextMenu.path); setContextMenu(null); notify('Relative path copied') }}><Copy size={14} /><span>Copy relative path</span></button>
+        {window.tungsten && <button onClick={() => { void window.tungsten!.revealPath(contextMenu.path); setContextMenu(null) }}><FolderOpen size={14} /><span>Reveal in file manager</span></button>}
+        <button className="danger" onClick={() => { void deleteFile(contextMenu.path) }}><Trash2 size={14} /><span>Delete</span></button>
       </div>}
 
       {toast && <div className="toast"><CircleCheck size={15} /><span>{toast}</span></div>}
