@@ -3,6 +3,8 @@ name: Build desktop installers
 on:
   workflow_dispatch:
   push:
+    branches:
+      - 'arena/01a09e56-graphene'
     tags:
       - 'v*'
 
