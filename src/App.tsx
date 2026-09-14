@@ -4,6 +4,7 @@ import {
   Bell,
   Blocks,
   Bot,
+  Box,
   Braces,
   Check,
   ChevronDown,
@@ -246,6 +247,8 @@ const activityItems = [
 
 export default function App() {
   const [files, setFiles] = useState<WorkspaceFile[]>(loadFiles)
+  const [workspaceName, setWorkspaceName] = useState('forge')
+  const [workspaceRoot, setWorkspaceRoot] = useState('')
   const [openTabs, setOpenTabs] = useState(['README.md', 'index.html', 'src/main.js'])
   const [activePath, setActivePath] = useState('src/main.js')
   const [activity, setActivity] = useState<Activity>('explorer')
@@ -287,24 +290,62 @@ export default function App() {
   }, [])
 
   const save = useCallback((path?: string) => {
-    localStorage.setItem(WORKSPACE_KEY, JSON.stringify(files))
-    if (path) {
-      setDirty((current) => {
-        const next = new Set(current)
-        next.delete(path)
-        return next
-      })
-      notify(`${fileName(path)} saved`)
-    } else {
-      setDirty(new Set())
-      notify('All files saved')
+    const targets = path ? [path] : [...dirty]
+    const finishSave = () => {
+      if (path) {
+        setDirty((current) => {
+          const next = new Set(current)
+          next.delete(path)
+          return next
+        })
+        notify(`${fileName(path)} saved`)
+      } else {
+        setDirty(new Set())
+        notify('All files saved')
+      }
     }
-  }, [files, notify])
+
+    if (window.tungsten && workspaceRoot) {
+      Promise.all(targets.map((target) => {
+        const file = files.find((item) => item.path === target)
+        return file ? window.tungsten!.writeFile(file.path, file.content) : Promise.resolve({ ok: true as const })
+      })).then(finishSave).catch((error: Error) => notify(`Save failed: ${error.message}`))
+      return
+    }
+
+    localStorage.setItem(WORKSPACE_KEY, JSON.stringify(files))
+    finishSave()
+  }, [dirty, files, notify, workspaceRoot])
 
   const openFile = useCallback((path: string) => {
     setOpenTabs((tabs) => tabs.includes(path) ? tabs : [...tabs, path])
     setActivePath(path)
   }, [])
+
+  const openDesktopFolder = useCallback(async () => {
+    if (!window.tungsten) {
+      notify('Install the desktop app to open local folders')
+      return
+    }
+
+    try {
+      const result = await window.tungsten.openFolder()
+      if (result.canceled || !result.files) return
+      const preferred = result.files.find((file) => file.path.toLowerCase() === 'readme.md')
+        || result.files.find((file) => file.path === 'package.json')
+        || result.files[0]
+      setFiles(result.files)
+      setWorkspaceName(result.name || 'workspace')
+      setWorkspaceRoot(result.path || '')
+      setOpenTabs(preferred ? [preferred.path] : [])
+      setActivePath(preferred?.path || '')
+      setDirty(new Set())
+      setTerminalLines((lines) => [...lines, { text: `Opened ${result.path} · ${result.files!.length} text files indexed`, kind: 'success' }])
+      notify(result.truncated ? 'Workspace opened; file index limit reached' : `${result.name} opened`)
+    } catch (error) {
+      notify(`Could not open folder: ${(error as Error).message}`)
+    }
+  }, [notify])
 
   const closeTab = (path: string) => {
     const index = openTabs.indexOf(path)
@@ -355,6 +396,9 @@ export default function App() {
     }
     setFiles((current) => [...current, { path, content: '', language: languages[ext] || 'plaintext' }])
     setDirty((current) => new Set(current).add(path))
+    if (window.tungsten && workspaceRoot) {
+      window.tungsten.writeFile(path, '').catch((error: Error) => notify(`Could not create file: ${error.message}`))
+    }
     openFile(path)
     setNewFileName('')
     setNewFileOpen(false)
@@ -363,6 +407,8 @@ export default function App() {
 
   const resetWorkspace = useCallback(() => {
     setFiles(defaultFiles)
+    setWorkspaceName('forge')
+    setWorkspaceRoot('')
     setOpenTabs(['README.md', 'index.html', 'src/main.js'])
     setActivePath('src/main.js')
     setDirty(new Set())
@@ -375,11 +421,22 @@ export default function App() {
     if (!command) return
     setHistory((current) => [...current, command])
     setHistoryIndex(-1)
-    const base: Array<{ text: string; kind?: string }> = [{ text: `tungsten@forge ~/forge $ ${command}`, kind: 'command' }]
+    const base: Array<{ text: string; kind?: string }> = [{ text: `tungsten@${workspaceName} ~/${workspaceName} $ ${command}`, kind: 'command' }]
     const [name, ...args] = command.split(/\s+/)
 
     if (name === 'clear') {
       setTerminalLines([])
+      return
+    }
+    if (window.tungsten && workspaceRoot) {
+      setTerminalLines((lines) => [...lines, ...base])
+      window.tungsten.runCommand(command).then((result) => {
+        const output: Array<{ text: string; kind?: string }> = []
+        if (result.stdout.trimEnd()) output.push({ text: result.stdout.trimEnd(), kind: result.code === 0 ? undefined : 'warning' })
+        if (result.stderr.trimEnd()) output.push({ text: result.stderr.trimEnd(), kind: 'error' })
+        if (!output.length) output.push({ text: `Process exited with code ${result.code}`, kind: result.code === 0 ? 'success' : 'error' })
+        setTerminalLines((lines) => [...lines, ...output])
+      }).catch((error: Error) => setTerminalLines((lines) => [...lines, { text: error.message, kind: 'error' }]))
       return
     }
     if (name === 'help') {
@@ -416,6 +473,7 @@ export default function App() {
   }
 
   const commands = useMemo(() => [
+    { label: 'File: Open Folder', detail: window.tungsten ? 'Open a local project from this computer' : 'Available in the desktop app', icon: FolderOpen, keys: ['⌘', 'O'], action: openDesktopFolder },
     { label: 'File: New File', detail: 'Create a file in the workspace', icon: File, keys: ['⌘', 'N'], action: () => setNewFileOpen(true) },
     { label: 'File: Save Active File', detail: activePath && activePath !== PREVIEW_PATH ? fileName(activePath) : 'No editable file active', icon: Check, keys: ['⌘', 'S'], action: () => activePath && save(activePath) },
     { label: 'File: Save All', detail: `${dirty.size} unsaved change${dirty.size === 1 ? '' : 's'}`, icon: Copy, action: () => save() },
@@ -424,7 +482,7 @@ export default function App() {
     { label: 'View: Toggle Panel', detail: panelOpen ? 'Hide the bottom panel' : 'Show the bottom panel', icon: PanelBottomOpen, keys: ['⌘', 'J'], action: () => setPanelOpen((value) => !value) },
     { label: 'Preferences: Open Settings', detail: 'Editor and workspace preferences', icon: Settings, keys: ['⌘', ','], action: () => setSettingsOpen(true) },
     { label: 'Workspace: Reset Starter', detail: 'Restore all starter files', icon: RotateCcw, action: resetWorkspace },
-  ], [activePath, dirty.size, panelOpen, resetWorkspace, runProject, save, sidebarVisible])
+  ], [activePath, dirty.size, openDesktopFolder, panelOpen, resetWorkspace, runProject, save, sidebarVisible])
 
   const paletteItems = palette.mode === 'files'
     ? files.filter((file) => file.path.toLowerCase().includes(paletteQuery.toLowerCase())).map((file) => ({
@@ -467,6 +525,8 @@ export default function App() {
         event.preventDefault(); setPalette({ open: true, mode: 'commands' }); setPaletteQuery('')
       } else if (mod && event.key.toLowerCase() === 'p') {
         event.preventDefault(); setPalette({ open: true, mode: 'files' }); setPaletteQuery('')
+      } else if (mod && event.key.toLowerCase() === 'o') {
+        event.preventDefault(); openDesktopFolder()
       } else if (mod && event.key.toLowerCase() === 's') {
         event.preventDefault(); if (activePath && activePath !== PREVIEW_PATH) save(activePath)
       } else if (mod && event.key.toLowerCase() === 'b') {
@@ -483,7 +543,7 @@ export default function App() {
     }
     window.addEventListener('keydown', keydown)
     return () => window.removeEventListener('keydown', keydown)
-  }, [activePath, runProject, save])
+  }, [activePath, openDesktopFolder, runProject, save])
 
   const startSidebarResize = (event: React.MouseEvent) => {
     event.preventDefault()
@@ -520,7 +580,7 @@ export default function App() {
         <div className="terminal-scroll">
           {terminalLines.map((line, index) => <div key={index} className={`terminal-line ${line.kind || ''}`}>{line.text}</div>)}
           <div className="terminal-prompt">
-            <span className="prompt-user">tungsten@forge</span><span className="prompt-path"> ~/forge </span><span>$</span>
+            <span className="prompt-user">tungsten@{workspaceName}</span><span className="prompt-path"> ~/{workspaceName} </span><span>$</span>
             <input
               ref={terminalInputRef}
               value={terminalInput}
@@ -597,7 +657,7 @@ export default function App() {
     return (
       <>
         <div className="sidebar-title"><span>EXPLORER</span><Ellipsis size={16} /></div>
-        <div className="project-heading"><ChevronDown size={13} /><strong>FORGE</strong><span /><TipButton label="New file" onClick={() => setNewFileOpen(true)}><File size={14} /><Plus size={8} className="mini-plus" /></TipButton><TipButton label="Collapse folders"><ChevronsDownUp size={14} /></TipButton></div>
+        <div className="project-heading"><ChevronDown size={13} /><strong>{workspaceName.toUpperCase()}</strong><span /><TipButton label="Open folder" onClick={openDesktopFolder}><FolderOpen size={14} /></TipButton><TipButton label="New file" onClick={() => setNewFileOpen(true)}><File size={14} /><Plus size={8} className="mini-plus" /></TipButton><TipButton label="Collapse folders"><ChevronsDownUp size={14} /></TipButton></div>
         <ExplorerTree files={files} activePath={activePath} openFile={openFile} dirty={dirty} />
         <div className="outline-section">
           <div className="section-heading"><ChevronDown size={13} /><span>OUTLINE</span><span /><Ellipsis size={14} /></div>
@@ -610,6 +670,7 @@ export default function App() {
 
   const menus: Record<string, Array<{ label: string; shortcut?: string; action: () => void; divider?: boolean }>> = {
     File: [
+      { label: 'Open Folder…', shortcut: 'Ctrl+O', action: openDesktopFolder },
       { label: 'New File…', shortcut: 'Ctrl+N', action: () => setNewFileOpen(true) },
       { label: 'Open File…', shortcut: 'Ctrl+P', action: () => setPalette({ open: true, mode: 'files' }) },
       { label: 'Save', shortcut: 'Ctrl+S', action: () => activePath && save(activePath), divider: true },
@@ -618,6 +679,14 @@ export default function App() {
     Edit: [
       { label: 'Command Palette…', shortcut: 'Ctrl+Shift+P', action: () => setPalette({ open: true, mode: 'commands' }) },
       { label: 'Find in Files', shortcut: 'Ctrl+Shift+F', action: () => { setActivity('search'); setSidebarVisible(true) } },
+    ],
+    Selection: [
+      { label: 'Select All', shortcut: 'Ctrl+A', action: () => notify('Use Ctrl+A inside the editor to select all') },
+      { label: 'Expand Selection', shortcut: 'Shift+Alt+→', action: () => notify('Selection expanded') },
+    ],
+    Go: [
+      { label: 'Go to File…', shortcut: 'Ctrl+P', action: () => setPalette({ open: true, mode: 'files' }) },
+      { label: 'Go to Symbol…', shortcut: 'Ctrl+Shift+O', action: () => notify(`${symbols.length} symbols in the active file`) },
     ],
     View: [
       { label: 'Primary Side Bar', shortcut: 'Ctrl+B', action: () => setSidebarVisible((value) => !value) },
@@ -654,7 +723,7 @@ export default function App() {
           ))}
         </nav>
         <button className="command-center" onClick={() => setPalette({ open: true, mode: 'commands' })}>
-          <Search size={12} /><span>forge — Tungsten</span><kbd>⌘ K</kbd>
+          <Search size={12} /><span>{workspaceName} — Tungsten</span><kbd>⌘ K</kbd>
         </button>
         <div className="title-actions">
           <TipButton label="Tungsten Copilot"><Bot size={15} /></TipButton>
@@ -705,7 +774,7 @@ export default function App() {
           </div>
 
           {activePath && activePath !== PREVIEW_PATH && <div className="breadcrumbs">
-            <span>forge</span><ChevronRight size={12} />
+            <span>{workspaceName}</span><ChevronRight size={12} />
             {activePath.split('/').map((part, index, parts) => <span className="crumb" key={`${part}-${index}`}>{index === parts.length - 1 && <FileGlyph path={activePath} />}{part}{index < parts.length - 1 && <ChevronRight size={12} />}</span>)}
             {dirty.has(activePath) && <span className="unsaved-label">UNSAVED</span>}
           </div>}
@@ -780,7 +849,7 @@ export default function App() {
               ) : (
                 <div className="empty-editor">
                   <div className="empty-brand"><Hammer size={41} /></div><h2>TUNGSTEN</h2><p>A development environment forged for focus.</p>
-                  <div className="empty-actions"><button onClick={() => setPalette({ open: true, mode: 'files' })}>Open file <kbd>⌘P</kbd></button><button onClick={() => setNewFileOpen(true)}>New file <kbd>⌘N</kbd></button><button onClick={runProject}>Run project <kbd>⌃↵</kbd></button></div>
+                  <div className="empty-actions"><button onClick={openDesktopFolder}>Open folder <kbd>⌘O</kbd></button><button onClick={() => setPalette({ open: true, mode: 'files' })}>Quick open <kbd>⌘P</kbd></button><button onClick={() => setNewFileOpen(true)}>New file <kbd>⌘N</kbd></button><button onClick={runProject}>Run project <kbd>⌃↵</kbd></button></div>
                 </div>
               )}
             </div>
@@ -805,7 +874,8 @@ export default function App() {
           <button title="No errors or warnings"><X size={12} /><span>0</span><CircleAlert size={12} /><span>0</span></button>
         </div>
         <div>
-          <button title="Tungsten workspace"><Radio size={11} /><span>Forge</span></button>
+          <button title={workspaceRoot || 'Tungsten demo workspace'}><Radio size={11} /><span>{workspaceName}</span></button>
+          <button title={window.tungsten ? `Desktop app · ${window.tungsten.platform}` : 'Browser workspace'}><Box size={11} /><span>{window.tungsten ? 'Desktop' : 'Web'}</span></button>
           {activePath !== PREVIEW_PATH && <><button title="Go to line">Ln {cursor.line}, Col {cursor.column}</button><button>Spaces: 2</button><button>UTF-8</button><button>LF</button><button>{activeFile?.language || 'Plain Text'}</button></>}
           <button title="Formatter"><CircleCheck size={12} /><span>Prettier</span></button>
           <button title="Tungsten engine"><Zap size={12} /><span>Ready</span></button>
