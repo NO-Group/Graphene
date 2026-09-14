@@ -1,6 +1,8 @@
-# Tungsten extension manifests
+# Tungsten 2 extension packages
 
-Tungsten extensions are declarative folders. They do not execute arbitrary renderer code. Install one from the Extensions sidebar by selecting a folder containing `extension.json`.
+Tungsten supports declarative contributions and integrity-verified executable extensions. Install a folder from the Extensions sidebar. Every package starts with `extension.json`.
+
+## Declarative package
 
 ```json
 {
@@ -11,23 +13,46 @@ Tungsten extensions are declarative folders. They do not execute arbitrary rende
   "description": "Shared commands and language metadata.",
   "contributes": {
     "commands": [
-      {
-        "id": "acme.verify",
-        "title": "Verify workspace",
-        "command": "npm run check"
-      }
+      { "title": "Verify workspace", "command": "npm run check" }
     ],
     "languages": [
-      {
-        "id": "acme-config",
-        "extensions": [".acme"]
-      }
+      { "id": "acme-config", "extensions": [".acme"] }
     ],
-    "themes": []
+    "themes": [],
+    "keybindings": [],
+    "sidebar": []
   }
 }
 ```
 
-Extensions are copied into Tungsten's per-user application data directory. Workspace-local extensions may be placed under `.tungsten/extensions/<extension-id>/extension.json`.
+Declarative packages never execute JavaScript. A command with a `command` field is sent to the user's integrated terminal only after the user chooses it.
 
-The current extension API loads and displays manifests and contributions. Future versions can add signed marketplace packages while preserving the declarative security boundary.
+## Isolated executable package
+
+An executable extension declares its entry point, permissions, and SHA-256 integrity:
+
+```json
+{
+  "id": "acme.runtime-tools",
+  "name": "Runtime Tools",
+  "version": "2.0.0",
+  "main": "extension.js",
+  "integrity": "sha256-<hex digest of extension.js>",
+  "permissions": ["commands"],
+  "contributes": {
+    "commands": [
+      { "id": "acme.runtime-tools.hello", "title": "Say hello" }
+    ]
+  }
+}
+```
+
+`extension.js` runs in Tungsten's separate extension-host process and a restricted VM context:
+
+```js
+tungsten.registerCommand('acme.runtime-tools.hello', () => 'Hello from the extension host')
+```
+
+The host does not expose `require`, Node filesystem APIs, Electron, or renderer globals. Activation is timed, command results must be serializable, and executable code remains disabled when its integrity declaration does not match. Installation displays requested permissions before copying the package.
+
+Per-user extensions live under Tungsten's application-data `extensions` directory. Workspace packages may be placed under `.tungsten/extensions/<extension-id>`.

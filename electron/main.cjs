@@ -1,10 +1,16 @@
 const { app, BrowserWindow, dialog, ipcMain, shell } = require('electron')
-const { exec, execFile, spawn } = require('node:child_process')
+const { exec, execFile, fork, spawn } = require('node:child_process')
 const fs = require('node:fs/promises')
 const path = require('node:path')
 const { pathToFileURL } = require('node:url')
+const os = require('node:os')
+const crypto = require('node:crypto')
 const pty = require('@homebridge/node-pty-prebuilt-multiarch')
 const { autoUpdater } = require('electron-updater')
+const chokidar = require('chokidar')
+const { Client: SshClient } = require('ssh2')
+const { WebSocket, WebSocketServer } = require('ws')
+const Y = require('yjs')
 
 const isDevelopment = !app.isPackaged
 let mainWindow = null
@@ -13,6 +19,17 @@ let terminalSequence = 0
 const terminalSessions = new Map()
 const languageServers = new Map()
 const debugSessions = new Map()
+let workspaceWatcher = null
+let watcherDebounce = null
+let remoteWorkspace = null
+let collaborationServer = null
+let collaborationSocket = null
+let collaborationDocument = null
+let collaborationToken = ''
+const collaborationPeers = new Set()
+let extensionHost = null
+let extensionRequestSequence = 0
+const extensionRequests = new Map()
 
 const TEXT_EXTENSIONS = new Set([
   '.asm', '.astro', '.bat', '.c', '.cc', '.clj', '.cljs', '.cmake', '.coffee',
@@ -157,8 +174,231 @@ async function workspacePayload() {
   }
 }
 
+async function startWorkspaceWatcher() {
+  if (workspaceWatcher) await workspaceWatcher.close()
+  workspaceWatcher = null
+  if (!workspaceRoot || workspaceRoot.startsWith('ssh://')) return
+  workspaceWatcher = chokidar.watch(workspaceRoot, {
+    ignoreInitial: true,
+    persistent: true,
+    ignored: (candidate) => candidate.split(path.sep).some((part) => IGNORED_DIRECTORIES.has(part)),
+    awaitWriteFinish: { stabilityThreshold: 180, pollInterval: 50 },
+  })
+  workspaceWatcher.on('all', (event, changedPath) => {
+    clearTimeout(watcherDebounce)
+    watcherDebounce = setTimeout(() => {
+      if (!mainWindow || mainWindow.isDestroyed()) return
+      mainWindow.webContents.send('workspace:file-event', {
+        event,
+        path: path.relative(workspaceRoot, changedPath).split(path.sep).join('/'),
+      })
+    }, 120)
+  })
+}
+
+async function searchWorkspace(query, limit = 300) {
+  if (!workspaceRoot && !remoteWorkspace) throw new Error('Open a workspace before searching.')
+  if (typeof query !== 'string' || !query.trim() || query.length > 500) return []
+  const safeLimit = Math.max(1, Math.min(1000, Number(limit) || 300))
+  if (remoteWorkspace) {
+    const workspace = await readRemoteWorkspace()
+    const needle = query.toLowerCase()
+    return workspace.files.flatMap((file) => file.content.split('\n').map((line, index) => ({ path: file.path, line: index + 1, column: line.toLowerCase().indexOf(needle) + 1, preview: line.trim().slice(0, 600) })).filter((match) => match.column > 0)).slice(0, safeLimit)
+  }
+
+  try {
+    const output = await new Promise((resolve, reject) => {
+      execFile('rg', ['--json', '--line-number', '--column', '--fixed-strings', '--hidden', '--glob', '!.git/**', '--glob', '!node_modules/**', '--glob', '!dist/**', query, '.'], {
+        cwd: workspaceRoot,
+        timeout: 15000,
+        maxBuffer: 8 * 1024 * 1024,
+        windowsHide: true,
+      }, (error, stdout) => {
+        if (error && error.code !== 1) reject(error)
+        else resolve(stdout || '')
+      })
+    })
+    const results = []
+    for (const line of output.split(/\r?\n/)) {
+      if (!line || results.length >= safeLimit) continue
+      try {
+        const event = JSON.parse(line)
+        if (event.type !== 'match') continue
+        const data = event.data
+        results.push({
+          path: data.path.text.replace(/^\.\//, '').split(path.sep).join('/'),
+          line: data.line_number,
+          column: (data.submatches?.[0]?.start || 0) + 1,
+          preview: data.lines.text.trimEnd(),
+        })
+      } catch { /* Ignore non-JSON rg output. */ }
+    }
+    return results
+  } catch {
+    const files = await readWorkspace(workspaceRoot)
+    return files.flatMap((file) => file.content.split('\n').flatMap((line, index) => {
+      const column = line.toLowerCase().indexOf(query.toLowerCase())
+      return column < 0 ? [] : [{ path: file.path, line: index + 1, column: column + 1, preview: line.trim() }]
+    })).slice(0, safeLimit)
+  }
+}
+
 function recentWorkspacePath() {
   return path.join(app.getPath('userData'), 'recent-workspace.json')
+}
+
+function sftpCall(sftp, method, ...args) {
+  return new Promise((resolve, reject) => sftp[method](...args, (error, value) => error ? reject(error) : resolve(value)))
+}
+
+function safeRemotePath(relativePath = '') {
+  if (!remoteWorkspace) throw new Error('No SSH workspace is connected.')
+  const root = remoteWorkspace.root
+  const resolved = path.posix.resolve(root, String(relativePath).replaceAll('\\', '/'))
+  if (resolved !== root && !resolved.startsWith(`${root}/`)) throw new Error('Remote path escapes the SSH workspace.')
+  return resolved
+}
+
+async function ensureRemoteDirectory(absoluteDirectory) {
+  if (!remoteWorkspace) return
+  const relative = path.posix.relative(remoteWorkspace.root, absoluteDirectory)
+  let current = remoteWorkspace.root
+  for (const segment of relative.split('/').filter(Boolean)) {
+    current = path.posix.join(current, segment)
+    const exists = await sftpCall(remoteWorkspace.sftp, 'stat', current).then((stats) => stats.isDirectory()).catch(() => false)
+    if (!exists) await sftpCall(remoteWorkspace.sftp, 'mkdir', current, { mode: 0o755 })
+  }
+}
+
+async function readRemoteWorkspace() {
+  if (!remoteWorkspace) throw new Error('No SSH workspace is connected.')
+  const files = []
+  const queue = [{ absolute: remoteWorkspace.root, relative: '', depth: 0 }]
+  let truncated = false
+  while (queue.length && files.length < MAX_WORKSPACE_FILES) {
+    const current = queue.shift()
+    let entries = []
+    try { entries = await sftpCall(remoteWorkspace.sftp, 'readdir', current.absolute) } catch { continue }
+    for (const entry of entries) {
+      if (IGNORED_DIRECTORIES.has(entry.filename) || entry.filename === '.' || entry.filename === '..') continue
+      const relative = current.relative ? `${current.relative}/${entry.filename}` : entry.filename
+      const absolute = path.posix.join(current.absolute, entry.filename)
+      if (entry.attrs?.isDirectory()) {
+        if (current.depth < 20) queue.push({ absolute, relative, depth: current.depth + 1 })
+        continue
+      }
+      if (!entry.attrs?.isFile() || (!TEXT_NAMES.has(entry.filename) && !TEXT_EXTENSIONS.has(path.posix.extname(entry.filename).toLowerCase())) || entry.attrs.size > MAX_FILE_BYTES) continue
+      try {
+        const content = await sftpCall(remoteWorkspace.sftp, 'readFile', absolute, { encoding: 'utf8' })
+        files.push({ path: relative, content, language: languageFor(relative) })
+      } catch { /* Ignore unreadable remote files. */ }
+      if (files.length >= MAX_WORKSPACE_FILES) { truncated = true; break }
+    }
+  }
+  return { canceled: false, name: path.posix.basename(remoteWorkspace.root) || remoteWorkspace.host, path: `ssh://${remoteWorkspace.username}@${remoteWorkspace.host}${remoteWorkspace.root}`, files, truncated, remote: true }
+}
+
+async function connectSshWorkspace(configuration) {
+  const host = String(configuration?.host || '').trim()
+  const username = String(configuration?.username || '').trim()
+  const root = path.posix.resolve('/', String(configuration?.root || '/').trim())
+  const port = Math.max(1, Math.min(65535, Number(configuration?.port) || 22))
+  if (!/^[a-zA-Z0-9._:-]{1,255}$/.test(host) || !username || username.length > 128) throw new Error('Enter a valid SSH host and username.')
+  if (remoteWorkspace?.client) remoteWorkspace.client.end()
+  const client = new SshClient()
+  const connectOptions = { host, port, username, readyTimeout: 15000, keepaliveInterval: 10000 }
+  if (configuration.password) connectOptions.password = String(configuration.password)
+  else if (configuration.privateKeyPath) {
+    const keyPath = String(configuration.privateKeyPath).replace(/^~(?=[/\\])/, app.getPath('home'))
+    connectOptions.privateKey = await fs.readFile(keyPath)
+  }
+  else if (process.env.SSH_AUTH_SOCK) connectOptions.agent = process.env.SSH_AUTH_SOCK
+  const sftp = await new Promise((resolve, reject) => {
+    client.once('ready', () => client.sftp((error, channel) => error ? reject(error) : resolve(channel)))
+    client.once('error', reject)
+    client.connect(connectOptions)
+  })
+  const rootStats = await sftpCall(sftp, 'stat', root).catch(() => null)
+  if (!rootStats?.isDirectory()) {
+    client.end()
+    throw new Error('The requested SSH workspace folder does not exist or is not accessible.')
+  }
+  workspaceRoot = null
+  remoteWorkspace = { client, sftp, host, port, username, root }
+  if (workspaceWatcher) { await workspaceWatcher.close(); workspaceWatcher = null }
+  client.once('close', () => {
+    if (remoteWorkspace?.client === client) remoteWorkspace = null
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('remote:status', { connected: false, message: 'SSH connection closed' })
+  })
+  return readRemoteWorkspace()
+}
+
+function emitCollaboration(channel, payload) {
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload)
+}
+
+function initializeCollaborationDocument() {
+  collaborationDocument?.destroy()
+  collaborationDocument = new Y.Doc()
+  collaborationDocument.on('update', (update, origin) => {
+    const message = JSON.stringify({ type: 'update', update: Buffer.from(update).toString('base64') })
+    for (const peer of collaborationPeers) if (peer !== origin && peer.readyState === WebSocket.OPEN) peer.send(message)
+    if (collaborationSocket && collaborationSocket !== origin && collaborationSocket.readyState === WebSocket.OPEN) collaborationSocket.send(message)
+    emitCollaboration('collaboration:document', { files: Object.fromEntries(collaborationDocument.getMap('files').entries()) })
+  })
+  return collaborationDocument
+}
+
+function handleCollaborationMessage(raw, origin) {
+  let message
+  try { message = JSON.parse(raw.toString()) } catch { return }
+  if ((message.type === 'sync' || message.type === 'update') && typeof message.update === 'string') {
+    Y.applyUpdate(collaborationDocument, Buffer.from(message.update, 'base64'), origin)
+    return
+  }
+  if (!['presence', 'comment', 'signal'].includes(message.type)) return
+  emitCollaboration('collaboration:event', message)
+  const serialized = JSON.stringify(message)
+  for (const peer of collaborationPeers) if (peer !== origin && peer.readyState === WebSocket.OPEN) peer.send(serialized)
+  if (collaborationSocket && collaborationSocket !== origin && collaborationSocket.readyState === WebSocket.OPEN) collaborationSocket.send(serialized)
+}
+
+async function hostCollaborationRoom(displayName) {
+  collaborationSocket?.close()
+  collaborationServer?.close()
+  collaborationPeers.clear()
+  initializeCollaborationDocument()
+  collaborationToken = crypto.randomBytes(24).toString('base64url')
+  collaborationServer = new WebSocketServer({ host: '0.0.0.0', port: 0 })
+  collaborationServer.on('connection', (socket, request) => {
+    if (request.url !== `/${collaborationToken}`) { socket.close(1008, 'Invalid room token'); return }
+    collaborationPeers.add(socket)
+    socket.send(JSON.stringify({ type: 'sync', update: Buffer.from(Y.encodeStateAsUpdate(collaborationDocument)).toString('base64') }))
+    socket.on('message', (message) => handleCollaborationMessage(message, socket))
+    socket.once('close', () => collaborationPeers.delete(socket))
+  })
+  await new Promise((resolve, reject) => { collaborationServer.once('listening', resolve); collaborationServer.once('error', reject) })
+  const port = collaborationServer.address().port
+  const address = Object.values(os.networkInterfaces()).flat().find((item) => item?.family === 'IPv4' && !item.internal)?.address || 'localhost'
+  const url = `ws://${address}:${port}/${collaborationToken}`
+  emitCollaboration('collaboration:event', { type: 'presence', name: displayName || 'Host', state: 'joined', self: true })
+  return { url, port, token: collaborationToken }
+}
+
+async function joinCollaborationRoom(url, displayName) {
+  if (typeof url !== 'string' || !/^wss?:\/\/[a-z0-9.:[\]-]+(?::\d+)?\/[A-Za-z0-9_-]{20,}$/i.test(url)) throw new Error('Enter a valid Tungsten collaboration URL.')
+  collaborationSocket?.close()
+  initializeCollaborationDocument()
+  collaborationSocket = new WebSocket(url)
+  const socket = collaborationSocket
+  socket.on('message', (message) => handleCollaborationMessage(message, socket))
+  await new Promise((resolve, reject) => {
+    socket.once('open', resolve)
+    socket.once('error', reject)
+  })
+  collaborationSocket.once('close', () => emitCollaboration('collaboration:event', { type: 'presence', name: displayName || 'You', state: 'disconnected', self: true }))
+  handleCollaborationMessage(JSON.stringify({ type: 'presence', name: displayName || 'Guest', state: 'joined' }), null)
+  return { connected: true }
 }
 
 async function rememberWorkspace() {
@@ -169,7 +409,7 @@ async function rememberWorkspace() {
 async function runFile(command, args) {
   return new Promise((resolve, reject) => {
     execFile(command, args, {
-      cwd: workspaceRoot,
+      cwd: workspaceRoot || app.getPath('home'),
       timeout: 30000,
       maxBuffer: 2 * 1024 * 1024,
       windowsHide: true,
@@ -413,6 +653,52 @@ async function detectProject() {
   return { tasks, tests, frameworks }
 }
 
+async function discoverTests() {
+  if (!workspaceRoot) return []
+  const { files } = await readWorkspace(workspaceRoot)
+  const candidates = files.filter((file) => /(^|\/)(__tests__|tests?|specs?)(\/|\.)|\.(test|spec)\.[^.]+$/i.test(file.path) || /_test\.(go|py)$|tests?\.rs$/i.test(file.path))
+  const tests = []
+  for (const file of candidates.slice(0, 1000)) {
+    const content = await fs.readFile(safeWorkspacePath(file.path), 'utf8').catch(() => '')
+    content.split('\n').forEach((line, index) => {
+      const script = line.match(/\b(?:it|test)\s*\(\s*['"`]([^'"`]+)['"`]/)
+      const python = line.match(/^\s*def\s+(test_[A-Za-z0-9_]+)/)
+      const go = line.match(/^\s*func\s+(Test[A-Za-z0-9_]+)/)
+      const rust = line.match(/^\s*fn\s+(test_[A-Za-z0-9_]+)/)
+      const name = script?.[1] || python?.[1] || go?.[1] || rust?.[1]
+      if (!name) return
+      const escapedName = name.replace(/["$`\\]/g, '\\$&')
+      const escapedPath = file.path.replace(/["$`\\]/g, '\\$&')
+      let command = `npm test -- --run "${escapedPath}" -t "${escapedName}"`
+      if (python) command = `pytest "${escapedPath}::${escapedName}"`
+      else if (go) command = `go test ./... -run "^${escapedName}$"`
+      else if (rust) command = `cargo test "${escapedName}"`
+      tests.push({ id: `${file.path}:${index + 1}:${name}`, name, path: file.path, line: index + 1, command })
+    })
+  }
+  return tests.slice(0, 5000)
+}
+
+async function readCoverage() {
+  if (!workspaceRoot) return {}
+  for (const candidate of ['coverage/lcov.info', 'lcov.info']) {
+    const content = await fs.readFile(safeWorkspacePath(candidate), 'utf8').catch(() => '')
+    if (!content) continue
+    const coverage = {}
+    let source = ''
+    for (const line of content.split('\n')) {
+      if (line.startsWith('SF:')) source = path.relative(workspaceRoot, path.resolve(workspaceRoot, line.slice(3))).replaceAll(path.sep, '/')
+      if (source && line.startsWith('DA:')) {
+        const [lineNumber, hits] = line.slice(3).split(',').map(Number)
+        if (!coverage[source]) coverage[source] = []
+        coverage[source].push({ line: lineNumber, hits })
+      }
+    }
+    return coverage
+  }
+  return {}
+}
+
 async function scanExtensions() {
   const roots = [path.join(app.getPath('userData'), 'extensions')]
   if (workspaceRoot) roots.push(path.join(workspaceRoot, '.tungsten', 'extensions'))
@@ -426,6 +712,14 @@ async function scanExtensions() {
       try {
         const manifest = JSON.parse(await fs.readFile(path.join(root, entry.name, 'extension.json'), 'utf8'))
         if (typeof manifest.id !== 'string' || typeof manifest.name !== 'string') continue
+        const extensionEntry = typeof manifest.main === 'string' ? manifest.main : ''
+        let verification = 'declarative'
+        if (extensionEntry) {
+          const entryPath = path.resolve(root, entry.name, extensionEntry)
+          if (!entryPath.startsWith(`${path.resolve(root, entry.name)}${path.sep}`)) continue
+          const digest = await fs.readFile(entryPath).then((content) => crypto.createHash('sha256').update(content).digest('hex')).catch(() => '')
+          verification = manifest.integrity === `sha256-${digest}` ? 'verified' : 'unsigned'
+        }
         extensions.push({
           id: manifest.id,
           name: manifest.name,
@@ -433,12 +727,37 @@ async function scanExtensions() {
           description: String(manifest.description || ''),
           publisher: String(manifest.publisher || 'Local'),
           contributes: manifest.contributes || {},
+          permissions: Array.isArray(manifest.permissions) ? manifest.permissions.filter((permission) => typeof permission === 'string').slice(0, 50) : [],
+          entry: extensionEntry,
+          verification,
           location: path.join(root, entry.name),
         })
       } catch { /* Skip invalid extension folders. */ }
     }
   }
   return extensions
+}
+
+function startExtensionHost(extensions) {
+  if (extensionHost?.connected) extensionHost.kill()
+  extensionHost = fork(path.join(__dirname, 'extension-host.cjs'), [], {
+    stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+  })
+  extensionHost.on('message', (message) => {
+    if (message?.type === 'ready') extensionHost.send({ type: 'activate', extensions: extensions.filter((extension) => extension.entry && extension.verification === 'verified' && extension.permissions.every((permission) => ['commands', 'themes', 'languages', 'keybindings', 'sidebar'].includes(permission))) })
+    if (message?.type === 'result' && extensionRequests.has(message.requestId)) {
+      const { resolve, reject } = extensionRequests.get(message.requestId)
+      extensionRequests.delete(message.requestId)
+      if (message.error) reject(new Error(message.error)); else resolve(message.value)
+    }
+    if (mainWindow && !mainWindow.isDestroyed() && ['activated', 'registered-command', 'log', 'error'].includes(message?.type)) mainWindow.webContents.send('extensions:event', message)
+  })
+  extensionHost.once('exit', () => {
+    extensionHost = null
+    for (const { reject } of extensionRequests.values()) reject(new Error('Extension host stopped.'))
+    extensionRequests.clear()
+  })
 }
 
 async function createProject(template, projectName) {
@@ -481,8 +800,11 @@ async function createProject(template, projectName) {
     await fs.writeFile(target, content, 'utf8')
   }
   await fs.writeFile(path.join(root, '.gitignore'), 'node_modules/\ndist/\ntarget/\n.venv/\n.env\n', 'utf8')
+  if (remoteWorkspace?.client) remoteWorkspace.client.end()
+  remoteWorkspace = null
   workspaceRoot = await fs.realpath(root)
   await rememberWorkspace()
+  await startWorkspaceWatcher()
   return workspacePayload()
 }
 
@@ -526,15 +848,21 @@ ipcMain.handle('desktop:open-folder', async () => {
     properties: ['openDirectory', 'createDirectory'],
   })
   if (selection.canceled || !selection.filePaths[0]) return { canceled: true }
+  if (remoteWorkspace?.client) remoteWorkspace.client.end()
+  remoteWorkspace = null
   workspaceRoot = await fs.realpath(selection.filePaths[0])
   await rememberWorkspace()
+  await startWorkspaceWatcher()
   return workspacePayload()
 })
 
 ipcMain.handle('desktop:restore-workspace', async () => {
   try {
     const recent = JSON.parse(await fs.readFile(recentWorkspacePath(), 'utf8'))
+    if (remoteWorkspace?.client) remoteWorkspace.client.end()
+    remoteWorkspace = null
     workspaceRoot = await fs.realpath(recent.path)
+    await startWorkspaceWatcher()
     return workspacePayload()
   } catch {
     workspaceRoot = null
@@ -542,10 +870,30 @@ ipcMain.handle('desktop:restore-workspace', async () => {
   }
 })
 
-ipcMain.handle('desktop:refresh-workspace', () => workspacePayload())
+ipcMain.handle('desktop:refresh-workspace', () => remoteWorkspace ? readRemoteWorkspace() : workspacePayload())
+ipcMain.handle('remote:ssh-connect', (_event, configuration) => connectSshWorkspace(configuration))
+ipcMain.handle('remote:ssh-disconnect', () => {
+  if (remoteWorkspace?.client) remoteWorkspace.client.end()
+  remoteWorkspace = null
+  return { ok: true }
+})
+ipcMain.handle('remote:profiles', async () => {
+  const result = { wsl: [], containers: [], devcontainer: false }
+  if (process.platform === 'win32') result.wsl = await runFile('wsl.exe', ['-l', '-q']).then(({ stdout }) => stdout.replaceAll('\0', '').split(/\r?\n/).filter(Boolean)).catch(() => [])
+  result.containers = await runFile('docker', ['ps', '--format', '{{.ID}}\x1f{{.Names}}\x1f{{.Image}}']).then(({ stdout }) => stdout.split(/\r?\n/).filter(Boolean).map((line) => { const [id, name, image] = line.split('\x1f'); return { id, name, image } })).catch(() => [])
+  if (workspaceRoot) result.devcontainer = await fs.access(path.join(workspaceRoot, '.devcontainer', 'devcontainer.json')).then(() => true).catch(() => false)
+  return result
+})
 
 ipcMain.handle('desktop:write-file', async (_event, relativePath, content) => {
   if (typeof content !== 'string') throw new Error('File content must be text.')
+  if (remoteWorkspace) {
+    const destination = safeRemotePath(relativePath)
+    const parent = path.posix.dirname(destination)
+    await ensureRemoteDirectory(parent)
+    await sftpCall(remoteWorkspace.sftp, 'writeFile', destination, content, { encoding: 'utf8', mode: 0o644 })
+    return { ok: true }
+  }
   const absolutePath = await resolveWritablePath(relativePath)
   await fs.mkdir(path.dirname(absolutePath), { recursive: true })
   await fs.writeFile(absolutePath, content, 'utf8')
@@ -553,6 +901,10 @@ ipcMain.handle('desktop:write-file', async (_event, relativePath, content) => {
 })
 
 ipcMain.handle('desktop:rename-path', async (_event, sourcePath, destinationPath) => {
+  if (remoteWorkspace) {
+    await sftpCall(remoteWorkspace.sftp, 'rename', safeRemotePath(sourcePath), safeRemotePath(destinationPath))
+    return { ok: true }
+  }
   const source = resolveWorkspacePath(sourcePath)
   const destination = await resolveWritablePath(destinationPath)
   const sourceStats = await fs.lstat(source)
@@ -563,6 +915,10 @@ ipcMain.handle('desktop:rename-path', async (_event, sourcePath, destinationPath
 })
 
 ipcMain.handle('desktop:delete-path', async (_event, relativePath) => {
+  if (remoteWorkspace) {
+    await sftpCall(remoteWorkspace.sftp, 'unlink', safeRemotePath(relativePath))
+    return { ok: true }
+  }
   const absolutePath = resolveWorkspacePath(relativePath)
   const stats = await fs.lstat(absolutePath)
   if (!stats.isFile()) throw new Error('Only files can be deleted from the explorer.')
@@ -612,12 +968,77 @@ ipcMain.handle('desktop:git-checkout', async (_event, branch) => {
   return gitStatus()
 })
 
-ipcMain.handle('terminal:create', (_event, columns = 80, rows = 24) => {
+ipcMain.handle('desktop:git-history', async (_event, limit = 100) => {
+  const count = Math.max(1, Math.min(500, Number(limit) || 100))
+  const { stdout } = await runFile('git', ['log', `-${count}`, '--date=iso-strict', '--pretty=format:%H%x1f%h%x1f%an%x1f%ad%x1f%s%x1f%D%x1e'])
+  return stdout.split('\x1e').filter(Boolean).map((entry) => {
+    const [hash, shortHash, author, date, subject, refs] = entry.trim().split('\x1f')
+    return { hash, shortHash, author, date, subject, refs }
+  })
+})
+
+ipcMain.handle('desktop:git-blame', async (_event, relativePath) => {
+  resolveWorkspacePath(relativePath)
+  const { stdout } = await runFile('git', ['blame', '--date=short', '--', relativePath])
+  return stdout.split(/\r?\n/).filter(Boolean).map((line, index) => {
+    const match = line.match(/^(\^?[0-9a-f]+)\s+\((.*?)\s+(\d{4}-\d{2}-\d{2})\s+\d+\)\s?(.*)$/)
+    return { line: index + 1, hash: match?.[1] || '', author: match?.[2]?.trim() || '', date: match?.[3] || '', content: match?.[4] || line }
+  })
+})
+
+ipcMain.handle('desktop:git-stashes', async () => {
+  const { stdout } = await runFile('git', ['stash', 'list', '--pretty=format:%gd%x1f%h%x1f%s'])
+  return stdout.split(/\r?\n/).filter(Boolean).map((line) => { const [ref, hash, subject] = line.split('\x1f'); return { ref, hash, subject } })
+})
+ipcMain.handle('desktop:git-stash-push', async (_event, message) => {
+  const args = ['stash', 'push', '--include-untracked']
+  if (typeof message === 'string' && message.trim()) args.push('-m', message.trim().slice(0, 200))
+  await runFile('git', args)
+  return gitStatus()
+})
+ipcMain.handle('desktop:git-stash-pop', async (_event, reference = 'stash@{0}') => {
+  if (typeof reference !== 'string' || !/^stash@\{\d+\}$/.test(reference)) throw new Error('Invalid stash reference.')
+  await runFile('git', ['stash', 'pop', reference])
+  return gitStatus()
+})
+ipcMain.handle('desktop:git-integrate', async (_event, operation, branch) => {
+  if (!['merge', 'rebase'].includes(operation) || typeof branch !== 'string' || !/^[\w./-]{1,200}$/.test(branch)) throw new Error('Invalid Git integration request.')
+  await runFile('git', [operation, branch])
+  return gitStatus()
+})
+ipcMain.handle('desktop:github-items', async () => {
+  const [pullRequests, issues] = await Promise.all([
+    runFile('gh', ['pr', 'list', '--limit', '30', '--json', 'number,title,state,author,url']).then(({ stdout }) => JSON.parse(stdout)).catch(() => []),
+    runFile('gh', ['issue', 'list', '--limit', '30', '--json', 'number,title,state,author,url']).then(({ stdout }) => JSON.parse(stdout)).catch(() => []),
+  ])
+  return { pullRequests, issues }
+})
+
+ipcMain.handle('terminal:create', async (_event, columns = 80, rows = 24, profile = null) => {
   const id = `terminal-${++terminalSequence}`
-  const shellPath = process.platform === 'win32'
-    ? process.env.COMSPEC || 'powershell.exe'
-    : process.env.SHELL || '/bin/bash'
-  const shellArgs = process.platform === 'win32' ? [] : ['-l']
+  if (remoteWorkspace) {
+    const stream = await new Promise((resolve, reject) => remoteWorkspace.client.shell({ term: 'xterm-256color', cols: columns, rows }, { cwd: remoteWorkspace.root }, (error, channel) => error ? reject(error) : resolve(channel)))
+    const session = {
+      write: (data) => stream.write(data),
+      resize: (cols, nextRows) => stream.setWindow(nextRows, cols, 0, 0),
+      kill: () => stream.close(),
+    }
+    terminalSessions.set(id, session)
+    stream.on('data', (data) => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('terminal:data', { id, data: data.toString() }) })
+    stream.stderr?.on('data', (data) => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('terminal:data', { id, data: data.toString() }) })
+    stream.once('close', () => { terminalSessions.delete(id); if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('terminal:exit', { id, code: 0 }) })
+    stream.write(`cd -- '${remoteWorkspace.root.replaceAll("'", "'\\''")}'\r`)
+    return { id, remote: true }
+  }
+  let shellPath = process.platform === 'win32' ? process.env.COMSPEC || 'powershell.exe' : process.env.SHELL || '/bin/bash'
+  let shellArgs = process.platform === 'win32' ? [] : ['-l']
+  if (profile?.kind === 'wsl' && process.platform === 'win32' && typeof profile.id === 'string' && profile.id.length < 200) {
+    shellPath = 'wsl.exe'
+    shellArgs = ['-d', profile.id]
+  } else if (profile?.kind === 'container' && typeof profile.id === 'string' && /^[a-zA-Z0-9_.-]{1,128}$/.test(profile.id)) {
+    shellPath = 'docker'
+    shellArgs = ['exec', '-it', profile.id, '/bin/sh']
+  }
   const session = pty.spawn(shellPath, shellArgs, {
     name: 'xterm-256color',
     cols: Math.max(20, Math.min(400, Number(columns) || 80)),
@@ -736,22 +1157,79 @@ ipcMain.handle('debug:stop', (_event, id) => {
   return { ok: true }
 })
 
+ipcMain.handle('workspace:search', (_event, query, limit) => searchWorkspace(query, limit))
 ipcMain.handle('project:detect', () => detectProject())
+ipcMain.handle('project:discover-tests', () => discoverTests())
+ipcMain.handle('project:coverage', () => readCoverage())
 ipcMain.handle('project:create', (_event, template, name) => createProject(template, name))
 
-ipcMain.handle('extensions:scan', () => scanExtensions())
+ipcMain.handle('extensions:scan', async () => {
+  const extensions = await scanExtensions()
+  startExtensionHost(extensions)
+  return extensions
+})
 ipcMain.handle('extensions:install-folder', async () => {
   const selection = await dialog.showOpenDialog(mainWindow, { title: 'Install a Tungsten extension', properties: ['openDirectory'] })
   if (selection.canceled || !selection.filePaths[0]) return { canceled: true, extensions: await scanExtensions() }
   const source = selection.filePaths[0]
   const manifest = JSON.parse(await fs.readFile(path.join(source, 'extension.json'), 'utf8'))
   if (typeof manifest.id !== 'string' || !/^[a-z0-9._-]+$/i.test(manifest.id)) throw new Error('The extension has an invalid id.')
+  const permissions = Array.isArray(manifest.permissions) ? manifest.permissions.filter((permission) => typeof permission === 'string') : []
+  const approval = await dialog.showMessageBox(mainWindow, {
+    type: 'warning',
+    buttons: ['Cancel', 'Install'],
+    defaultId: 0,
+    cancelId: 0,
+    title: 'Review extension permissions',
+    message: `Install ${manifest.name || manifest.id}?`,
+    detail: `${permissions.length ? `Requested permissions: ${permissions.join(', ')}` : 'No runtime permissions requested.'}\n\nExecutable extensions run only when their entry point has a matching SHA-256 integrity declaration.`,
+  })
+  if (approval.response !== 1) return { canceled: true, extensions: await scanExtensions() }
   const destinationRoot = path.join(app.getPath('userData'), 'extensions')
   const destination = path.join(destinationRoot, manifest.id)
   await fs.mkdir(destinationRoot, { recursive: true })
   await fs.rm(destination, { recursive: true, force: true })
   await fs.cp(source, destination, { recursive: true })
-  return { canceled: false, extensions: await scanExtensions() }
+  const extensions = await scanExtensions()
+  startExtensionHost(extensions)
+  return { canceled: false, extensions }
+})
+
+ipcMain.handle('extensions:execute', (_event, command, args = []) => {
+  if (!extensionHost?.connected || typeof command !== 'string') throw new Error('Extension host is unavailable.')
+  const requestId = ++extensionRequestSequence
+  return new Promise((resolve, reject) => {
+    extensionRequests.set(requestId, { resolve, reject })
+    extensionHost.send({ type: 'execute', requestId, command, args: Array.isArray(args) ? args.slice(0, 20) : [] })
+    setTimeout(() => {
+      if (!extensionRequests.has(requestId)) return
+      extensionRequests.delete(requestId)
+      reject(new Error('Extension command timed out.'))
+    }, 12000)
+  })
+})
+
+ipcMain.handle('collaboration:host', (_event, displayName) => hostCollaborationRoom(String(displayName || '').slice(0, 80)))
+ipcMain.handle('collaboration:join', (_event, url, displayName) => joinCollaborationRoom(url, String(displayName || '').slice(0, 80)))
+ipcMain.handle('collaboration:publish', (_event, relativePath, content) => {
+  if (!collaborationDocument || typeof relativePath !== 'string' || typeof content !== 'string' || content.length > MAX_FILE_BYTES) throw new Error('Invalid collaboration update.')
+  collaborationDocument.getMap('files').set(relativePath.slice(0, 1000), content)
+  return { ok: true }
+})
+ipcMain.handle('collaboration:event', (_event, message) => {
+  if (!message || !['presence', 'comment', 'signal'].includes(message.type)) throw new Error('Invalid collaboration event.')
+  handleCollaborationMessage(JSON.stringify({ ...message, text: typeof message.text === 'string' ? message.text.slice(0, 5000) : message.text }), null)
+  return { ok: true }
+})
+ipcMain.handle('collaboration:leave', () => {
+  collaborationSocket?.close()
+  collaborationServer?.close()
+  collaborationSocket = null
+  collaborationServer = null
+  collaborationPeers.clear()
+  collaborationDocument?.destroy()
+  collaborationDocument = null
+  return { ok: true }
 })
 
 ipcMain.handle('recovery:save', async (_event, snapshot) => {
@@ -822,6 +1300,12 @@ app.whenReady().then(() => {
 })
 
 app.on('window-all-closed', () => {
+  if (workspaceWatcher) void workspaceWatcher.close()
+  if (remoteWorkspace?.client) remoteWorkspace.client.end()
+  collaborationSocket?.close()
+  collaborationServer?.close()
+  if (extensionHost?.connected) extensionHost.kill()
+  clearTimeout(watcherDebounce)
   terminalSessions.forEach((session) => session.kill())
   languageServers.forEach((server) => server.peer.dispose())
   debugSessions.forEach((session) => session.peer.dispose())

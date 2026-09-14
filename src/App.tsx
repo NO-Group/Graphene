@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Editor from '@monaco-editor/react'
 import {
+  Archive,
   Bell,
   Blocks,
   Bot,
@@ -18,6 +19,8 @@ import {
   Columns2,
   Command,
   Copy,
+  CornerDownRight,
+  Cpu,
   Ellipsis,
   ExternalLink,
   Download,
@@ -30,7 +33,9 @@ import {
   FolderOpen,
   GitBranch,
   GitCommitHorizontal,
+  GitPullRequest,
   Hammer,
+  Layers,
   ListChecks,
   Maximize2,
   Menu,
@@ -53,6 +58,9 @@ import {
   StepForward,
   TerminalSquare,
   Trash2,
+  Undo2,
+  UsersRound,
+  Mic,
   X,
   Zap,
 } from 'lucide-react'
@@ -76,6 +84,11 @@ type SettingsState = {
   autosave: boolean
   stickyScroll: boolean
   renderWhitespace: boolean
+  reducedMotion: boolean
+  highContrast: boolean
+  screenReaderOptimized: boolean
+  telemetry: boolean
+  crashReports: boolean
 }
 
 type TreeNode = {
@@ -92,6 +105,8 @@ const lspLanguages = new Set(['javascript', 'typescript', 'python', 'rust', 'go'
 const openedLspDocuments = new Set<string>()
 let languageProvidersRegistered = false
 let monacoApi: any = null
+const semanticTokenTypes = ['namespace', 'type', 'class', 'enum', 'interface', 'struct', 'typeParameter', 'parameter', 'variable', 'property', 'enumMember', 'event', 'function', 'method', 'macro', 'keyword', 'modifier', 'comment', 'string', 'number', 'regexp', 'operator', 'decorator']
+const semanticTokenModifiers = ['declaration', 'definition', 'readonly', 'static', 'deprecated', 'abstract', 'async', 'modification', 'documentation', 'defaultLibrary']
 
 async function prepareLanguageDocument(language: string, model: any) {
   const api = window.tungsten
@@ -157,6 +172,97 @@ function registerLanguageProviders(monaco: any) {
         return { contents: contents.map((entry: any) => ({ value: typeof entry === 'string' ? entry : entry.value || '' })) }
       },
     })
+    const locationRequest = async (method: string, model: any, position: any, extra: Record<string, unknown> = {}) => {
+      const context = await prepareLanguageDocument(language, model)
+      if (!context) return []
+      const result = await context.api.languageRequest(language, method, {
+        textDocument: { uri: context.uri },
+        position: { line: position.lineNumber - 1, character: position.column - 1 },
+        ...extra,
+      }).catch(() => null)
+      const locations = Array.isArray(result) ? result : result ? [result] : []
+      return locations.map((location: any) => {
+        const target = location.targetUri ? { uri: location.targetUri, range: location.targetSelectionRange || location.targetRange } : location
+        return {
+          uri: monaco.Uri.parse(target.uri),
+          range: new monaco.Range(target.range.start.line + 1, target.range.start.character + 1, target.range.end.line + 1, target.range.end.character + 1),
+        }
+      })
+    }
+    monaco.languages.registerDefinitionProvider(language, {
+      provideDefinition: (model: any, position: any) => locationRequest('textDocument/definition', model, position),
+    })
+    monaco.languages.registerReferenceProvider(language, {
+      provideReferences: (model: any, position: any) => locationRequest('textDocument/references', model, position, { context: { includeDeclaration: true } }),
+    })
+    monaco.languages.registerRenameProvider(language, {
+      provideRenameEdits: async (model: any, position: any, newName: string) => {
+        const context = await prepareLanguageDocument(language, model)
+        if (!context) return { edits: [], rejectReason: 'Language server unavailable.' }
+        const result = await context.api.languageRequest(language, 'textDocument/rename', {
+          textDocument: { uri: context.uri },
+          position: { line: position.lineNumber - 1, character: position.column - 1 },
+          newName,
+        }).catch(() => null)
+        const edits: any[] = []
+        for (const [uri, changes] of Object.entries(result?.changes || {})) {
+          for (const change of changes as any[]) edits.push({ resource: monaco.Uri.parse(uri), textEdit: { text: change.newText, range: new monaco.Range(change.range.start.line + 1, change.range.start.character + 1, change.range.end.line + 1, change.range.end.character + 1) }, versionId: undefined })
+        }
+        return { edits, rejectReason: edits.length ? undefined : 'No rename edits were returned.' }
+      },
+      resolveRenameLocation: async (model: any, position: any) => {
+        const context = await prepareLanguageDocument(language, model)
+        if (!context) return null
+        const result = await context.api.languageRequest(language, 'textDocument/prepareRename', { textDocument: { uri: context.uri }, position: { line: position.lineNumber - 1, character: position.column - 1 } }).catch(() => null)
+        const range = result?.range || result
+        return range ? { range: new monaco.Range(range.start.line + 1, range.start.character + 1, range.end.line + 1, range.end.character + 1), text: model.getValueInRange(new monaco.Range(range.start.line + 1, range.start.character + 1, range.end.line + 1, range.end.character + 1)) } : null
+      },
+    })
+    monaco.languages.registerSignatureHelpProvider(language, {
+      signatureHelpTriggerCharacters: ['(', ','],
+      provideSignatureHelp: async (model: any, position: any) => {
+        const context = await prepareLanguageDocument(language, model)
+        if (!context) return null
+        const value = await context.api.languageRequest(language, 'textDocument/signatureHelp', { textDocument: { uri: context.uri }, position: { line: position.lineNumber - 1, character: position.column - 1 } }).catch(() => null)
+        return value ? { value, dispose: () => undefined } : null
+      },
+    })
+    monaco.languages.registerDocumentSemanticTokensProvider(language, {
+      getLegend: () => ({ tokenTypes: semanticTokenTypes, tokenModifiers: semanticTokenModifiers }),
+      provideDocumentSemanticTokens: async (model: any) => {
+        const context = await prepareLanguageDocument(language, model)
+        if (!context) return { data: new Uint32Array() }
+        const result = await context.api.languageRequest(language, 'textDocument/semanticTokens/full', { textDocument: { uri: context.uri } }).catch(() => null)
+        return { data: new Uint32Array(result?.data || []), resultId: result?.resultId }
+      },
+      releaseDocumentSemanticTokens: () => undefined,
+    })
+    monaco.languages.registerCodeActionProvider(language, {
+      provideCodeActions: async (model: any, range: any, actionContext: any) => {
+        const context = await prepareLanguageDocument(language, model)
+        if (!context) return { actions: [], dispose: () => undefined }
+        const diagnostics = actionContext.markers.map((marker: any) => ({
+          range: { start: { line: marker.startLineNumber - 1, character: marker.startColumn - 1 }, end: { line: marker.endLineNumber - 1, character: marker.endColumn - 1 } },
+          severity: marker.severity === monaco.MarkerSeverity.Error ? 1 : marker.severity === monaco.MarkerSeverity.Warning ? 2 : 3,
+          message: marker.message,
+          source: marker.source,
+          code: marker.code,
+        }))
+        const results = await context.api.languageRequest(language, 'textDocument/codeAction', {
+          textDocument: { uri: context.uri },
+          range: { start: { line: range.startLineNumber - 1, character: range.startColumn - 1 }, end: { line: range.endLineNumber - 1, character: range.endColumn - 1 } },
+          context: { diagnostics, only: actionContext.only ? [actionContext.only] : undefined },
+        }).catch(() => [])
+        const actions = (results || []).map((action: any) => {
+          const edits: any[] = []
+          for (const [uri, changes] of Object.entries(action.edit?.changes || {})) {
+            for (const change of changes as any[]) edits.push({ resource: monaco.Uri.parse(uri), textEdit: { text: change.newText, range: new monaco.Range(change.range.start.line + 1, change.range.start.character + 1, change.range.end.line + 1, change.range.end.character + 1) }, versionId: undefined })
+          }
+          return { title: action.title, kind: action.kind, diagnostics: actionContext.markers, isPreferred: action.isPreferred, edit: edits.length ? { edits } : undefined, command: action.command ? { id: action.command.command, title: action.command.title || action.title, arguments: action.command.arguments } : undefined }
+        })
+        return { actions, dispose: () => undefined }
+      },
+    })
   }
 }
 
@@ -167,6 +273,11 @@ const defaultSettings: SettingsState = {
   autosave: false,
   stickyScroll: true,
   renderWhitespace: false,
+  reducedMotion: false,
+  highContrast: false,
+  screenReaderOptimized: false,
+  telemetry: false,
+  crashReports: true,
 }
 
 function loadFiles() {
@@ -367,18 +478,47 @@ export default function App() {
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; path: string } | null>(null)
   const [sidePreview, setSidePreview] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
+  const [nativeSearchResults, setNativeSearchResults] = useState<Array<{ path: string; line: number; column: number; preview: string }>>([])
+  const [searching, setSearching] = useState(false)
+  const [externalChange, setExternalChange] = useState<string | null>(null)
   const [commitMessage, setCommitMessage] = useState('')
   const [gitInfo, setGitInfo] = useState<GitStatusResult>({ isRepository: false, branch: 'main', changes: [], error: '' })
   const [gitBranches, setGitBranches] = useState<string[]>([])
+  const [gitView, setGitView] = useState<'changes' | 'history' | 'github'>('changes')
+  const [gitHistory, setGitHistory] = useState<Array<{ hash: string; shortHash: string; author: string; date: string; subject: string; refs: string }>>([])
+  const [gitStashes, setGitStashes] = useState<Array<{ ref: string; hash: string; subject: string }>>([])
+  const [githubItems, setGithubItems] = useState<{ pullRequests: Array<{ number: number; title: string; state: string; url: string }>; issues: Array<{ number: number; title: string; state: string; url: string }> }>({ pullRequests: [], issues: [] })
   const [projectInfo, setProjectInfo] = useState<ProjectInfo>({ tasks: [{ label: 'npm: dev', command: 'npm run dev' }, { label: 'npm: build', command: 'npm run build' }], tests: [], frameworks: ['Vite'] })
+  const [discoveredTests, setDiscoveredTests] = useState<Array<{ id: string; name: string; path: string; line: number; command: string }>>([])
+  const [coverage, setCoverage] = useState<Record<string, Array<{ line: number; hits: number }>>>({})
   const [extensions, setExtensions] = useState<ExtensionManifest[]>([])
-  const [terminalSessionKey, setTerminalSessionKey] = useState(0)
+  const [terminalTabs, setTerminalTabs] = useState<Array<{ id: number; label: string; generation: number; profile?: { kind: 'wsl' | 'container'; id: string } }>>([{ id: 1, label: 'shell 1', generation: 0 }])
+  const [activeTerminalId, setActiveTerminalId] = useState(1)
+  const [terminalSplit, setTerminalSplit] = useState(false)
   const [terminalCommand, setTerminalCommand] = useState<{ id: number; command: string } | null>(null)
   const [projectModal, setProjectModal] = useState(false)
+  const [remoteModal, setRemoteModal] = useState(false)
+  const [remoteConnected, setRemoteConnected] = useState(false)
+  const [sshConfig, setSshConfig] = useState({ host: '', port: '22', username: '', root: '/', password: '', privateKeyPath: '' })
+  const [remoteProfiles, setRemoteProfiles] = useState<{ wsl: string[]; containers: Array<{ id: string; name: string; image: string }>; devcontainer: boolean }>({ wsl: [], containers: [], devcontainer: false })
+  const [collaborationOpen, setCollaborationOpen] = useState(false)
+  const [collaborationUrl, setCollaborationUrl] = useState('')
+  const [collaborationName, setCollaborationName] = useState('Developer')
+  const [collaborationActive, setCollaborationActive] = useState(false)
+  const [participants, setParticipants] = useState<string[]>([])
+  const [comments, setComments] = useState<Array<{ name: string; text: string; path?: string; line?: number }>>([])
+  const [commentInput, setCommentInput] = useState('')
   const [projectTemplate, setProjectTemplate] = useState('web')
   const [projectName, setProjectName] = useState('my-tungsten-app')
   const [debugState, setDebugState] = useState<{ running: boolean; output: string[]; id?: string; threadId?: number }>({ running: false, output: [] })
-  const [breakpoints, setBreakpoints] = useState<Array<{ path: string; line: number }>>([])
+  const [breakpoints, setBreakpoints] = useState<Array<{ path: string; line: number; condition?: string }>>([])
+  const [debugThreads, setDebugThreads] = useState<Array<{ id: number; name: string }>>([])
+  const [debugFrames, setDebugFrames] = useState<Array<{ id: number; name: string; line: number; source?: { path?: string; name?: string } }>>([])
+  const [debugScopes, setDebugScopes] = useState<Array<{ name: string; variablesReference: number }>>([])
+  const [debugVariables, setDebugVariables] = useState<Array<{ name: string; value: string; type?: string; variablesReference?: number }>>([])
+  const [watches, setWatches] = useState<string[]>([])
+  const [watchInput, setWatchInput] = useState('')
+  const [watchValues, setWatchValues] = useState<Record<string, string>>({})
   const [lspState, setLspState] = useState<{ language: string; running: boolean; message: string }>({ language: '', running: false, message: 'Built-in syntax engine' })
   const [problems, setProblems] = useState<Array<{ message: string; path: string; line: number; severity: number }>>([])
   const [updateState, setUpdateState] = useState('Up to date')
@@ -386,7 +526,7 @@ export default function App() {
   const [toast, setToast] = useState('')
   const [menuOpen, setMenuOpen] = useState<string | null>(null)
   const [terminalLines, setTerminalLines] = useState<Array<{ text: string; kind?: string }>>([
-    { text: `Tungsten Shell 1.0.0  ·  ${window.tungsten ? 'desktop process runner' : 'web sandbox'}`, kind: 'muted' },
+    { text: `Tungsten Shell 2.0.0  ·  ${window.tungsten ? 'desktop process runner' : 'web sandbox'}`, kind: 'muted' },
     { text: `${supportedLanguages.length} language grammars loaded. Type “help” for available commands.`, kind: 'success' },
   ])
   const [terminalInput, setTerminalInput] = useState('')
@@ -397,6 +537,8 @@ export default function App() {
   const paletteInputRef = useRef<HTMLInputElement>(null)
   const newFileInputRef = useRef<HTMLInputElement>(null)
   const restoredWorkspaceRef = useRef(false)
+  const watchEvaluationQueueRef = useRef<string[]>([])
+  const toggleBreakpointRef = useRef<(path: string, line: number) => void>(() => undefined)
 
   const activeFile = files.find((file) => file.path === activePath)
   const symbols = useMemo(() => symbolsFor(activeFile), [activeFile])
@@ -458,12 +600,18 @@ export default function App() {
     setFiles(result.files)
     setWorkspaceName(result.name || 'workspace')
     setWorkspaceRoot(result.path || '')
+    setRemoteConnected(Boolean(result.remote))
     setOpenTabs(preferred ? [preferred.path] : [])
     setActivePath(preferred?.path || '')
     setDirty(new Set())
     window.tungsten?.gitStatus().then(setGitInfo).catch(() => undefined)
     window.tungsten?.gitBranches().then(setGitBranches).catch(() => setGitBranches([]))
+    window.tungsten?.gitHistory(150).then(setGitHistory).catch(() => setGitHistory([]))
+    window.tungsten?.gitStashes().then(setGitStashes).catch(() => setGitStashes([]))
+    window.tungsten?.githubItems().then(setGithubItems).catch(() => setGithubItems({ pullRequests: [], issues: [] }))
     window.tungsten?.detectProject().then(setProjectInfo).catch(() => undefined)
+    window.tungsten?.discoverTests().then(setDiscoveredTests).catch(() => setDiscoveredTests([]))
+    window.tungsten?.readCoverage().then(setCoverage).catch(() => setCoverage({}))
     window.tungsten?.scanExtensions().then(setExtensions).catch(() => undefined)
     window.tungsten?.loadRecovery().then((snapshot) => {
       if (!snapshot?.files?.length || snapshot.workspaceRoot !== result.path) return
@@ -609,6 +757,7 @@ export default function App() {
         setOpenTabs(remaining)
         setActivePath(remaining.includes(activePath) ? activePath : remaining[0] || result.files[0]?.path || '')
         setDirty(new Set())
+        setExternalChange(null)
         notify(`${result.files.length} files refreshed from disk`)
       }
     } catch (error) {
@@ -632,6 +781,9 @@ export default function App() {
     if (!window.tungsten || !workspaceRoot) return
     try {
       setGitInfo(await window.tungsten.gitStatus())
+      window.tungsten.gitHistory(150).then(setGitHistory).catch(() => setGitHistory([]))
+      window.tungsten.gitStashes().then(setGitStashes).catch(() => setGitStashes([]))
+      window.tungsten.githubItems().then(setGithubItems).catch(() => setGithubItems({ pullRequests: [], issues: [] }))
     } catch (error) {
       setGitInfo({ isRepository: false, branch: '', changes: [], error: (error as Error).message })
     }
@@ -739,6 +891,43 @@ export default function App() {
     }
   }
 
+  const connectRemote = async () => {
+    if (!window.tungsten) return notify('Remote workspaces require the desktop app')
+    try {
+      const result = await window.tungsten.connectSsh({ host: sshConfig.host, port: Number(sshConfig.port), username: sshConfig.username, root: sshConfig.root, password: sshConfig.password || undefined, privateKeyPath: sshConfig.privateKeyPath || undefined })
+      applyDesktopWorkspace(result)
+      setRemoteConnected(true)
+      setRemoteModal(false)
+      setSshConfig((config) => ({ ...config, password: '' }))
+      notify(`Connected to ${sshConfig.host}`)
+    } catch (error) {
+      notify(`SSH connection failed: ${(error as Error).message}`)
+    }
+  }
+
+  const startCollaboration = async (join = false) => {
+    if (!window.tungsten) return notify('Live collaboration requires the desktop app')
+    try {
+      if (join) await window.tungsten.joinCollaboration(collaborationUrl, collaborationName)
+      else {
+        const room = await window.tungsten.hostCollaboration(collaborationName)
+        setCollaborationUrl(room.url)
+      }
+      setCollaborationActive(true)
+      setParticipants([collaborationName])
+      notify(join ? 'Joined collaboration room' : 'Collaboration room is ready')
+    } catch (error) {
+      notify(`Collaboration failed: ${(error as Error).message}`)
+    }
+  }
+
+  const sendComment = () => {
+    if (!commentInput.trim() || !window.tungsten) return
+    const comment = { type: 'comment' as const, name: collaborationName, text: commentInput.trim(), path: activeFile?.path, line: cursor.line }
+    void window.tungsten.sendCollaborationEvent(comment)
+    setCommentInput('')
+  }
+
   const startDebugging = async () => {
     if (!window.tungsten || !workspaceRoot) {
       notify('Open a desktop workspace before debugging')
@@ -793,6 +982,17 @@ export default function App() {
     }
   }
 
+  const editBreakpointCondition = async (path: string, line: number) => {
+    const point = breakpoints.find((breakpoint) => breakpoint.path === path && breakpoint.line === line)
+    const condition = window.prompt('Breakpoint condition (leave empty for unconditional)', point?.condition || '') ?? point?.condition
+    const next = breakpoints.map((breakpoint) => breakpoint.path === path && breakpoint.line === line ? { ...breakpoint, condition: condition || undefined } : breakpoint)
+    setBreakpoints(next)
+    if (window.tungsten && debugState.id) {
+      const absolutePath = await window.tungsten.absolutePath(path)
+      await window.tungsten.sendDebug(debugState.id, { type: 'request', command: 'setBreakpoints', arguments: { source: { path: absolutePath }, breakpoints: next.filter((breakpoint) => breakpoint.path === path).map((breakpoint) => ({ line: breakpoint.line, condition: breakpoint.condition })) } })
+    }
+  }
+
   const installExtension = async () => {
     if (!window.tungsten) {
       notify('Local extensions are available in the desktop app')
@@ -819,13 +1019,30 @@ export default function App() {
     }
   }
 
+  const openGitBlame = async () => {
+    if (!window.tungsten || !activeFile || activeFile.language === 'diff') return
+    try {
+      const blame = await window.tungsten.gitBlame(activeFile.path)
+      const virtualPath = `.tungsten/blame/${fileName(activeFile.path)}.txt`
+      const content = blame.map((entry) => `${entry.hash.slice(0, 9).padEnd(10)} ${entry.author.slice(0, 18).padEnd(19)} ${entry.date} │ ${entry.content}`).join('\n')
+      setFiles((current) => [...current.filter((file) => file.path !== virtualPath), { path: virtualPath, content, language: 'plaintext' }])
+      openFile(virtualPath)
+    } catch (error) { notify(`Could not load blame: ${(error as Error).message}`) }
+  }
+
   const extensionCommands: CommandItem[] = extensions.flatMap((extension) => {
     const contributions = extension.contributes as { commands?: Array<{ id?: string; title?: string; command?: string }> }
-    return (contributions.commands || []).filter((command) => command.title && command.command).map((command) => ({
+    return (contributions.commands || []).filter((command) => command.title && (command.id || command.command)).map((command) => ({
       label: `Extension: ${command.title}`,
-      detail: `${extension.name} · ${command.command}`,
+      detail: `${extension.name} · ${command.id || command.command}`,
       icon: Blocks,
-      action: () => runIntegratedCommand(command.command!),
+      action: async () => {
+        if (command.id && extension.verification === 'verified') {
+          const result = await window.tungsten?.executeExtensionCommand(command.id, [])
+          if (result !== undefined) notify(typeof result === 'string' ? result : JSON.stringify(result))
+        } else if (command.command) runIntegratedCommand(command.command)
+        else notify('Executable extensions require a matching SHA-256 integrity declaration')
+      },
     }))
   })
 
@@ -839,9 +1056,13 @@ export default function App() {
     { label: 'File: Save All', detail: `${dirty.size} unsaved change${dirty.size === 1 ? '' : 's'}`, icon: Copy, action: () => { void save().catch(() => undefined) } },
     { label: 'Editor: Format Document', detail: 'Run the registered Monaco formatter', icon: Braces, keys: ['⇧', '⌥', 'F'], action: () => runEditorAction('editor.action.formatDocument') },
     { label: 'Editor: Toggle Word Wrap', detail: settings.wordWrap ? 'Word wrap is on' : 'Word wrap is off', icon: ChevronsDownUp, action: () => setSettings((current) => ({ ...current, wordWrap: !current.wordWrap })) },
+    { label: 'View: Welcome Dashboard', detail: 'Open workspace, remote, and collaboration actions', icon: Hammer, action: () => setActivePath('') },
     { label: 'Run: Open Live Preview', detail: 'Build and run the current workspace', icon: Play, keys: ['⌃', '↵'], action: runProject },
     { label: 'Debug: Start or Stop Session', detail: debugState.running ? 'Stop the active DAP session' : 'Start from .tungsten/launch.json', icon: BugPlay, keys: ['F5'], action: () => { if (debugState.running) void stopDebugging(); else void startDebugging() } },
-    { label: 'Test: Show Test Explorer', detail: `${projectInfo.tests.length} test profiles detected`, icon: FlaskConical, action: () => { setActivity('tests'); setSidebarVisible(true) } },
+    { label: 'Test: Show Test Explorer', detail: `${discoveredTests.length} individual tests detected`, icon: FlaskConical, action: () => { setActivity('tests'); setSidebarVisible(true) } },
+    { label: 'Git: Show Blame for Active File', detail: activeFile?.path || 'No active file', icon: GitCommitHorizontal, action: openGitBlame },
+    { label: 'Remote: Connect over SSH', detail: 'Open the remote development dashboard', icon: SquareCode, action: () => { setRemoteModal(true); void window.tungsten?.remoteProfiles().then(setRemoteProfiles) } },
+    { label: 'Collaboration: Open Live Share', detail: collaborationActive ? `${participants.length} participants connected` : 'Host or join a Yjs room', icon: UsersRound, action: () => setCollaborationOpen(true) },
     ...projectInfo.tasks.slice(0, 12).map((task) => ({ label: `Task: ${task.label}`, detail: task.command, icon: ListChecks, action: () => runIntegratedCommand(task.command) })),
     ...extensionCommands,
     { label: 'Extensions: Install From Folder', detail: 'Install a declarative Tungsten extension', icon: PackagePlus, action: () => { void installExtension() } },
@@ -904,7 +1125,25 @@ export default function App() {
   }, [activeFile, editorInstance, workspaceRoot])
 
   useEffect(() => {
+    toggleBreakpointRef.current = (path, line) => { void toggleBreakpoint(path, line) }
+  })
+
+  useEffect(() => {
     if (!window.tungsten) return
+    const unsubscribeWorkspace = window.tungsten.onWorkspaceFileEvent(({ path }) => setExternalChange(path))
+    const unsubscribeRemote = window.tungsten.onRemoteStatus(({ connected, message }) => { setRemoteConnected(connected); notify(message) })
+    const unsubscribeCollaborationDocument = window.tungsten.onCollaborationDocument(({ files: sharedFiles }) => {
+      setFiles((current) => {
+        const known = new Map(current.map((file) => [file.path, file]))
+        Object.entries(sharedFiles).forEach(([path, content]) => known.set(path, { ...(known.get(path) || { path, language: languageForPath(path) }), content }))
+        return [...known.values()]
+      })
+    })
+    const unsubscribeExtension = window.tungsten.onExtensionEvent((message) => { if (message.type === 'error') notify(`${message.extensionId}: ${message.message}`) })
+    const unsubscribeCollaborationEvent = window.tungsten.onCollaborationEvent((message) => {
+      if (message.type === 'presence' && message.name) setParticipants((current) => message.state === 'disconnected' ? current.filter((name) => name !== message.name) : current.includes(message.name!) ? current : [...current, message.name!])
+      if (message.type === 'comment' && message.text) setComments((current) => [...current, { name: message.name || 'Collaborator', text: message.text!, path: message.path, line: message.line }])
+    })
     const unsubscribeLanguage = window.tungsten.onLanguageNotification(({ language, message }) => {
       if (message.method !== 'textDocument/publishDiagnostics' || !monacoApi) return
       const diagnostics = message.params?.diagnostics || []
@@ -928,17 +1167,39 @@ export default function App() {
     const unsubscribeDebugMessage = window.tungsten.onDebugMessage(({ id, message }) => {
       if (message.type === 'event' && message.event === 'initialized') {
         void (async () => {
-          const grouped = new Map<string, Array<{ path: string; line: number }>>()
+          const grouped = new Map<string, Array<{ path: string; line: number; condition?: string }>>()
           breakpoints.forEach((point) => grouped.set(point.path, [...(grouped.get(point.path) || []), point]))
           for (const [path, points] of grouped) {
             const absolutePath = await window.tungsten!.absolutePath(path)
-            await window.tungsten!.sendDebug(id, { type: 'request', command: 'setBreakpoints', arguments: { source: { path: absolutePath }, breakpoints: points.map((point) => ({ line: point.line })) } })
+            await window.tungsten!.sendDebug(id, { type: 'request', command: 'setBreakpoints', arguments: { source: { path: absolutePath }, breakpoints: points.map((point) => ({ line: point.line, condition: point.condition })) } })
           }
           await window.tungsten!.sendDebug(id, { type: 'request', command: 'configurationDone', arguments: {} })
         })()
       } else if (message.type === 'event' && message.event === 'output') setDebugState((state) => ({ ...state, output: [...state.output, message.body?.output || ''] }))
-      else if (message.type === 'event' && message.event === 'stopped') setDebugState((state) => ({ ...state, threadId: message.body?.threadId, output: [...state.output, `Paused: ${message.body?.reason || 'breakpoint'}`] }))
-      else if (message.type === 'response' && message.success === false) setDebugState((state) => ({ ...state, output: [...state.output, message.message || `${message.command} failed`] }))
+      else if (message.type === 'event' && message.event === 'stopped') {
+        const threadId = message.body?.threadId || 1
+        setDebugState((state) => ({ ...state, threadId, output: [...state.output, `Paused: ${message.body?.reason || 'breakpoint'}`] }))
+        void window.tungsten!.sendDebug(id, { type: 'request', command: 'threads', arguments: {} })
+      } else if (message.type === 'response' && message.success && message.command === 'threads') {
+        const threads = message.body?.threads || []
+        setDebugThreads(threads)
+        const threadId = threads[0]?.id || 1
+        void window.tungsten!.sendDebug(id, { type: 'request', command: 'stackTrace', arguments: { threadId, startFrame: 0, levels: 50 } })
+      } else if (message.type === 'response' && message.success && message.command === 'stackTrace') {
+        const frames = message.body?.stackFrames || []
+        setDebugFrames(frames)
+        if (frames[0]?.id) void window.tungsten!.sendDebug(id, { type: 'request', command: 'scopes', arguments: { frameId: frames[0].id } })
+      } else if (message.type === 'response' && message.success && message.command === 'scopes') {
+        const scopes = message.body?.scopes || []
+        setDebugScopes(scopes)
+        if (scopes[0]?.variablesReference) void window.tungsten!.sendDebug(id, { type: 'request', command: 'variables', arguments: { variablesReference: scopes[0].variablesReference } })
+        watchEvaluationQueueRef.current = [...watches]
+        watches.forEach((expression) => { void window.tungsten!.sendDebug(id, { type: 'request', command: 'evaluate', arguments: { expression, frameId: debugFrames[0]?.id, context: 'watch' } }) })
+      } else if (message.type === 'response' && message.success && message.command === 'variables') setDebugVariables(message.body?.variables || [])
+      else if (message.type === 'response' && message.success && message.command === 'evaluate') {
+        const expression = watchEvaluationQueueRef.current.shift()
+        if (expression) setWatchValues((values) => ({ ...values, [expression]: message.body?.result || 'undefined' }))
+      } else if (message.type === 'response' && message.success === false) setDebugState((state) => ({ ...state, output: [...state.output, message.message || `${message.command} failed`] }))
     })
     const unsubscribeDebugOutput = window.tungsten.onDebugOutput(({ output }) => setDebugState((state) => ({ ...state, output: [...state.output, output] })))
     const unsubscribeDebugExit = window.tungsten.onDebugExit(({ code }) => setDebugState((state) => ({ ...state, running: false, output: [...state.output, `Adapter exited with code ${code}`] })))
@@ -947,8 +1208,8 @@ export default function App() {
       setUpdateState(labels[event] || event)
       if (event === 'update-available') void window.tungsten?.downloadUpdate()
     })
-    return () => { unsubscribeLanguage(); unsubscribeStatus(); unsubscribeDebugMessage(); unsubscribeDebugOutput(); unsubscribeDebugExit(); unsubscribeUpdater() }
-  }, [breakpoints])
+    return () => { unsubscribeWorkspace(); unsubscribeRemote(); unsubscribeCollaborationDocument(); unsubscribeCollaborationEvent(); unsubscribeExtension(); unsubscribeLanguage(); unsubscribeStatus(); unsubscribeDebugMessage(); unsubscribeDebugOutput(); unsubscribeDebugExit(); unsubscribeUpdater() }
+  }, [breakpoints, debugFrames, notify, watches])
 
   useEffect(() => {
     if (!window.tungsten || !workspaceRoot || !dirty.size) return
@@ -960,8 +1221,40 @@ export default function App() {
   }, [dirty, files, workspaceRoot])
 
   useEffect(() => {
+    if (!window.tungsten || !collaborationActive || !activeFile || activeFile.language === 'diff') return
+    const timer = window.setTimeout(() => { void window.tungsten!.publishCollaborationFile(activeFile.path, activeFile.content) }, 220)
+    return () => window.clearTimeout(timer)
+  }, [activeFile, collaborationActive])
+
+  useEffect(() => {
+    if (!window.tungsten || !workspaceRoot || !searchQuery.trim()) return
+    let canceled = false
+    const timer = window.setTimeout(() => {
+      setSearching(true)
+      window.tungsten!.searchWorkspace(searchQuery, 500).then((results) => {
+        if (!canceled) setNativeSearchResults(results)
+      }).catch(() => {
+        if (!canceled) setNativeSearchResults([])
+      }).finally(() => {
+        if (!canceled) setSearching(false)
+      })
+    }, 180)
+    return () => { canceled = true; window.clearTimeout(timer) }
+  }, [searchQuery, workspaceRoot])
+
+  useEffect(() => {
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings))
   }, [settings])
+
+  useEffect(() => {
+    if (!editorInstance || !activeFile || activeFile.language === 'diff') return
+    const decorations = [
+      ...breakpoints.filter((point) => point.path === activeFile.path).map((point) => ({ range: new monacoApi.Range(point.line, 1, point.line, 1), options: { isWholeLine: true, glyphMarginClassName: 'debug-breakpoint-glyph', glyphMarginHoverMessage: { value: point.condition ? `Conditional breakpoint: ${point.condition}` : 'Breakpoint' } } })),
+      ...(coverage[activeFile.path] || []).map((entry) => ({ range: new monacoApi.Range(entry.line, 1, entry.line, 1), options: { isWholeLine: true, linesDecorationsClassName: entry.hits > 0 ? 'coverage-hit-line' : 'coverage-miss-line', overviewRuler: { color: entry.hits > 0 ? '#628844' : '#a34e49', position: 1 } } })),
+    ]
+    const collection = editorInstance.createDecorationsCollection(decorations)
+    return () => collection.clear()
+  }, [activeFile, breakpoints, coverage, editorInstance])
 
   useEffect(() => {
     if (!settings.autosave || !dirty.size) return
@@ -1032,6 +1325,25 @@ export default function App() {
     window.addEventListener('mouseup', up)
   }
 
+  const newTerminal = (profile?: { kind: 'wsl' | 'container'; id: string; label?: string }) => {
+    const id = Math.max(0, ...terminalTabs.map((terminal) => terminal.id)) + 1
+    setTerminalTabs((tabs) => [...tabs, { id, label: profile?.label || `shell ${id}`, generation: 0, profile: profile ? { kind: profile.kind, id: profile.id } : undefined }])
+    setActiveTerminalId(id)
+    setPanelTab('TERMINAL')
+    setPanelOpen(true)
+  }
+
+  const closeTerminal = (id: number) => {
+    if (terminalTabs.length === 1) {
+      setTerminalTabs([{ id: id + 1, label: 'shell 1', generation: 0 }])
+      setActiveTerminalId(id + 1)
+      return
+    }
+    const remaining = terminalTabs.filter((terminal) => terminal.id !== id)
+    setTerminalTabs(remaining)
+    if (activeTerminalId === id) setActiveTerminalId(remaining[0].id)
+  }
+
   const panelContent = () => {
     if (panelTab === 'PROBLEMS') return problems.length ? (
       <div className="problems-list">{problems.map((problem, index) => <button key={`${problem.path}-${problem.line}-${index}`} onClick={() => { openFile(problem.path); editorInstance?.setPosition({ lineNumber: problem.line, column: 1 }); editorInstance?.revealLineInCenter(problem.line) }}><CircleAlert size={13} className={problem.severity === 1 ? 'error' : 'warning'} /><span>{problem.message}</span><small>{problem.path}:{problem.line}</small></button>)}</div>
@@ -1044,7 +1356,14 @@ export default function App() {
     if (panelTab === 'DEBUG CONSOLE') return (
       <div className="debug-console-output">{debugState.output.length ? debugState.output.map((line, index) => <div key={index}>{line}</div>) : <div className="empty-panel"><Bot size={24} /><strong>Debug console is ready</strong><span>Start a debug session to inspect values.</span></div>}</div>
     )
-    if (window.tungsten && workspaceRoot) return <DesktopTerminal sessionKey={terminalSessionKey} command={terminalCommand} />
+    if (window.tungsten) {
+      const secondary = terminalTabs.find((terminal) => terminal.id !== activeTerminalId)
+      const visible = terminalTabs.filter((terminal) => terminal.id === activeTerminalId || (terminalSplit && terminal.id === secondary?.id))
+      return <div className="terminal-workspace">
+        <div className="terminal-tab-strip">{terminalTabs.map((terminal) => <button key={terminal.id} className={terminal.id === activeTerminalId ? 'active' : ''} onClick={() => setActiveTerminalId(terminal.id)}><TerminalSquare size={11} /><span>{terminal.label}</span><X size={10} onClick={(event) => { event.stopPropagation(); closeTerminal(terminal.id) }} /></button>)}<button className="terminal-add" title="New terminal" onClick={() => newTerminal()}><Plus size={12} /></button></div>
+        <div className={`terminal-grid ${terminalSplit && visible.length > 1 ? 'split' : ''}`}>{visible.map((terminal) => <div key={`${terminal.id}-${terminal.generation}`} className="terminal-cell"><DesktopTerminal sessionKey={terminal.id * 1000 + terminal.generation} command={terminal.id === activeTerminalId ? terminalCommand : null} profile={terminal.profile} /></div>)}</div>
+      </div>
+    }
     return (
       <div className="terminal" onClick={() => terminalInputRef.current?.focus()}>
         <div className="terminal-scroll">
@@ -1081,9 +1400,15 @@ export default function App() {
 
   const searchResults = useMemo(() => {
     if (!searchQuery.trim()) return []
+    if (window.tungsten && workspaceRoot) return nativeSearchResults.map((result) => ({
+      file: files.find((file) => file.path === result.path) || { path: result.path, content: '', language: languageForPath(result.path) },
+      line: result.preview,
+      index: result.line - 1,
+      column: result.column,
+    }))
     const query = searchQuery.toLowerCase()
-    return files.flatMap((file) => file.content.split('\n').map((line, index) => ({ file, line, index })).filter((result) => result.line.toLowerCase().includes(query))).slice(0, 40)
-  }, [files, searchQuery])
+    return files.flatMap((file) => file.content.split('\n').map((line, index) => ({ file, line, index, column: line.toLowerCase().indexOf(query) + 1 })).filter((result) => result.column > 0)).slice(0, 500)
+  }, [files, nativeSearchResults, searchQuery, workspaceRoot])
 
   const sourceChanges = useMemo(() => {
     const changes = new Map<string, string>()
@@ -1097,9 +1422,9 @@ export default function App() {
       <>
         <div className="sidebar-title"><span>SEARCH</span><Ellipsis size={16} /></div>
         <div className="search-box-wrap"><Search size={13} /><input value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="Search workspace" /></div>
-        <div className="search-meta">{searchQuery ? `${searchResults.length} result${searchResults.length === 1 ? '' : 's'} in ${new Set(searchResults.map((item) => item.file.path)).size} files` : 'Type to search across files'}</div>
+        <div className="search-meta">{searching ? 'Searching with ripgrep…' : searchQuery ? `${searchResults.length} result${searchResults.length === 1 ? '' : 's'} in ${new Set(searchResults.map((item) => item.file.path)).size} files` : 'Type to search across files'}</div>
         <div className="search-results">
-          {searchResults.map((result, index) => <button key={`${result.file.path}-${result.index}-${index}`} onClick={() => openFile(result.file.path)}>
+          {searchResults.map((result, index) => <button key={`${result.file.path}-${result.index}-${index}`} onClick={() => { openFile(result.file.path); setCursor({ line: result.index + 1, column: result.column }); window.setTimeout(() => { editorInstance?.setPosition({ lineNumber: result.index + 1, column: result.column }); editorInstance?.revealLineInCenter(result.index + 1) }, 30) }}>
             <div><FileGlyph path={result.file.path} /><strong>{fileName(result.file.path)}</strong><span>:{result.index + 1}</span></div>
             <p>{result.line.trim()}</p>
           </button>)}
@@ -1109,6 +1434,8 @@ export default function App() {
     if (activity === 'source') return (
       <>
         <div className="sidebar-title"><span>SOURCE CONTROL</span><span className="branch-label"><GitBranch size={11} />{gitInfo.branch || 'no repository'}</span></div>
+        <div className="git-view-tabs"><button className={gitView === 'changes' ? 'active' : ''} onClick={() => setGitView('changes')}>Changes</button><button className={gitView === 'history' ? 'active' : ''} onClick={() => setGitView('history')}>History</button><button className={gitView === 'github' ? 'active' : ''} onClick={() => setGitView('github')}>GitHub</button></div>
+        {gitView === 'changes' && <>
         {gitBranches.length > 0 && <div className="branch-switcher"><GitBranch size={13} /><select value={gitInfo.branch} onChange={(event) => { void window.tungsten?.gitCheckout(event.target.value).then((status) => { setGitInfo(status); void refreshWorkspace() }).catch((error: Error) => notify(error.message)) }}>{gitBranches.map((branch) => <option key={branch}>{branch}</option>)}</select></div>}
         <div className="commit-box">
           <textarea
@@ -1131,6 +1458,10 @@ export default function App() {
             <b>{status}</b>
           </div>
         ))}
+        <div className="git-actions"><button onClick={() => { void window.tungsten?.gitStashPush(`Tungsten stash ${new Date().toLocaleString()}`).then((status) => { setGitInfo(status); void refreshGit() }).catch((error: Error) => notify(error.message)) }}>Stash changes</button><button disabled={gitStashes.length === 0} onClick={() => { if (gitStashes[0]) void window.tungsten?.gitStashPop(gitStashes[0].ref).then((status) => { setGitInfo(status); void refreshWorkspace() }).catch((error: Error) => notify(error.message)) }}>Pop stash</button></div>
+        </>}
+        {gitView === 'history' && <div className="git-history-list">{gitHistory.map((commit) => <div key={commit.hash}><i /><span><strong>{commit.subject}</strong><small>{commit.shortHash} · {commit.author} · {new Date(commit.date).toLocaleDateString()}</small>{commit.refs && <em>{commit.refs}</em>}</span></div>)}{gitStashes.length > 0 && <><div className="section-heading"><span>STASHES</span><span className="count-pill">{gitStashes.length}</span></div>{gitStashes.map((stash) => <button className="stash-row" key={stash.ref} onClick={() => { void window.tungsten?.gitStashPop(stash.ref).then(setGitInfo).catch((error: Error) => notify(error.message)) }}><Archive size={12} /><span>{stash.subject}</span><small>{stash.ref}</small></button>)}</>}</div>}
+        {gitView === 'github' && <div className="github-list"><div className="section-heading"><span>PULL REQUESTS</span><span className="count-pill">{githubItems.pullRequests.length}</span></div>{githubItems.pullRequests.map((item) => <button key={`pr-${item.number}`} onClick={() => { void window.tungsten?.openExternal(item.url) }}><GitPullRequest size={13} /><span><strong>#{item.number} {item.title}</strong><small>{item.state}</small></span></button>)}<div className="section-heading"><span>ISSUES</span><span className="count-pill">{githubItems.issues.length}</span></div>{githubItems.issues.map((item) => <button key={`issue-${item.number}`} onClick={() => { void window.tungsten?.openExternal(item.url) }}><CircleAlert size={13} /><span><strong>#{item.number} {item.title}</strong><small>{item.state}</small></span></button>)}</div>}
       </>
     )
     if (activity === 'debug') return (
@@ -1140,19 +1471,33 @@ export default function App() {
           <button className={debugState.running ? 'stop' : ''} onClick={() => { if (debugState.running) void stopDebugging(); else void startDebugging() }}>{debugState.running ? <CircleStop size={15} /> : <BugPlay size={15} />}{debugState.running ? 'Stop session' : 'Start debugging'}<kbd>F5</kbd></button>
           <p>{files.some((file) => file.path === '.tungsten/launch.json') ? 'Using .tungsten/launch.json' : 'Add .tungsten/launch.json with your DAP adapter configuration.'}</p>
         </div>
-        {debugState.running && debugState.id && <div className="debug-controls"><button title="Continue" onClick={() => { void window.tungsten?.sendDebug(debugState.id!, { type: 'request', command: 'continue', arguments: { threadId: debugState.threadId || 1 } }) }}><Play size={13} /></button><button title="Pause" onClick={() => { void window.tungsten?.sendDebug(debugState.id!, { type: 'request', command: 'pause', arguments: { threadId: debugState.threadId || 1 } }) }}><Pause size={13} /></button><button title="Step over" onClick={() => { void window.tungsten?.sendDebug(debugState.id!, { type: 'request', command: 'next', arguments: { threadId: debugState.threadId || 1 } }) }}><StepForward size={13} /></button><span>DAP SESSION</span></div>}
+        {debugState.running && debugState.id && <div className="debug-controls"><button title="Continue" onClick={() => { void window.tungsten?.sendDebug(debugState.id!, { type: 'request', command: 'continue', arguments: { threadId: debugState.threadId || 1 } }) }}><Play size={13} /></button><button title="Pause" onClick={() => { void window.tungsten?.sendDebug(debugState.id!, { type: 'request', command: 'pause', arguments: { threadId: debugState.threadId || 1 } }) }}><Pause size={13} /></button><button title="Step over" onClick={() => { void window.tungsten?.sendDebug(debugState.id!, { type: 'request', command: 'next', arguments: { threadId: debugState.threadId || 1 } }) }}><StepForward size={13} /></button><button title="Step into" onClick={() => { void window.tungsten?.sendDebug(debugState.id!, { type: 'request', command: 'stepIn', arguments: { threadId: debugState.threadId || 1 } }) }}><CornerDownRight size={13} /></button><button title="Step out" onClick={() => { void window.tungsten?.sendDebug(debugState.id!, { type: 'request', command: 'stepOut', arguments: { threadId: debugState.threadId || 1 } }) }}><Undo2 size={13} /></button><span>DAP SESSION</span></div>}
+        {debugState.running && <>
+          <div className="section-heading"><ChevronDown size={13} /><span>THREADS</span><span className="count-pill">{debugThreads.length}</span></div>
+          <div className="debug-data-list">{debugThreads.map((thread) => <button key={thread.id} onClick={() => { setDebugState((state) => ({ ...state, threadId: thread.id })); void window.tungsten?.sendDebug(debugState.id!, { type: 'request', command: 'stackTrace', arguments: { threadId: thread.id, startFrame: 0, levels: 50 } }) }}><Cpu size={12} /><strong>{thread.name}</strong><small>#{thread.id}</small></button>)}</div>
+          <div className="section-heading"><ChevronDown size={13} /><span>CALL STACK</span><span className="count-pill">{debugFrames.length}</span></div>
+          <div className="debug-data-list">{debugFrames.map((frame) => <button key={frame.id} onClick={() => { const candidate = (frame.source?.path || '').replaceAll('\\', '/'); const relative = candidate.startsWith(workspaceRoot.replaceAll('\\', '/')) ? candidate.slice(workspaceRoot.length + 1) : frame.source?.name || ''; if (files.some((file) => file.path === relative)) { openFile(relative); window.setTimeout(() => { editorInstance?.setPosition({ lineNumber: frame.line, column: 1 }); editorInstance?.revealLineInCenter(frame.line) }, 30) } void window.tungsten?.sendDebug(debugState.id!, { type: 'request', command: 'scopes', arguments: { frameId: frame.id } }) }}><Layers size={12} /><strong>{frame.name}</strong><small>{frame.source?.name || 'source'}:{frame.line}</small></button>)}</div>
+          <div className="section-heading"><ChevronDown size={13} /><span>VARIABLES</span><span className="count-pill">{debugVariables.length}</span></div>
+          <div className="debug-variable-list">{debugScopes.map((scope) => <b key={scope.name}>{scope.name}</b>)}{debugVariables.map((variable, index) => <div key={`${variable.name}-${index}`}><span>{variable.name}</span><code>{variable.value}</code><small>{variable.type}</small></div>)}</div>
+          <div className="section-heading"><ChevronDown size={13} /><span>WATCH</span><span className="count-pill">{watches.length}</span></div>
+          <div className="watch-input"><input value={watchInput} placeholder="Expression" onChange={(event) => setWatchInput(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && watchInput.trim()) { setWatches((items) => [...items, watchInput.trim()]); setWatchInput('') } }} /><Plus size={12} /></div>
+          <div className="debug-variable-list">{watches.map((expression) => <div key={expression}><span>{expression}</span><code>{watchValues[expression] || 'not evaluated'}</code><X size={11} onClick={() => setWatches((items) => items.filter((item) => item !== expression))} /></div>)}</div>
+        </>}
         <div className="section-heading"><ChevronDown size={13} /><span>BREAKPOINTS</span><span className="count-pill">{breakpoints.length}</span><TipButton label="Add breakpoint at cursor" onClick={() => { if (activeFile) void toggleBreakpoint(activeFile.path, cursor.line) }}><Plus size={13} /></TipButton></div>
-        <div className="breakpoint-list">{breakpoints.length ? breakpoints.map((point) => <button key={`${point.path}:${point.line}`} onClick={() => { openFile(point.path); setCursor({ line: point.line, column: 1 }); editorInstance?.revealLineInCenter(point.line); editorInstance?.setPosition({ lineNumber: point.line, column: 1 }) }}><span className="breakpoint-dot" /><strong>{fileName(point.path)}</strong><small>line {point.line}</small><X size={12} onClick={(event) => { event.stopPropagation(); void toggleBreakpoint(point.path, point.line) }} /></button>) : <p>No breakpoints set</p>}</div>
+        <div className="breakpoint-list">{breakpoints.length ? breakpoints.map((point) => <button key={`${point.path}:${point.line}`} title="Right-click to edit condition" onContextMenu={(event) => { event.preventDefault(); void editBreakpointCondition(point.path, point.line) }} onClick={() => { openFile(point.path); setCursor({ line: point.line, column: 1 }); editorInstance?.revealLineInCenter(point.line); editorInstance?.setPosition({ lineNumber: point.line, column: 1 }) }}><span className="breakpoint-dot" /><strong>{fileName(point.path)}</strong><small>line {point.line}{point.condition ? ` · ${point.condition}` : ''}</small><X size={12} onClick={(event) => { event.stopPropagation(); void toggleBreakpoint(point.path, point.line) }} /></button>) : <p>No breakpoints set</p>}</div>
         <div className="section-heading"><ChevronDown size={13} /><span>DEBUG OUTPUT</span></div>
         <div className="debug-sidebar-output">{debugState.output.slice(-8).map((line, index) => <p key={index}>{line}</p>)}</div>
       </>
     )
     if (activity === 'tests') return (
       <>
-        <div className="sidebar-title"><span>TESTING & TASKS</span><TipButton label="Refresh project tasks" onClick={() => { void window.tungsten?.detectProject().then(setProjectInfo) }}><RefreshCw size={14} /></TipButton></div>
+        <div className="sidebar-title"><span>TESTING & TASKS</span><TipButton label="Refresh tests and coverage" onClick={() => { void window.tungsten?.detectProject().then(setProjectInfo); void window.tungsten?.discoverTests().then(setDiscoveredTests); void window.tungsten?.readCoverage().then(setCoverage) }}><RefreshCw size={14} /></TipButton></div>
         <div className="framework-tags">{projectInfo.frameworks.length ? projectInfo.frameworks.map((framework) => <span key={framework}>{framework}</span>) : <span>No framework detected</span>}</div>
         <div className="section-heading"><ChevronDown size={13} /><span>TEST PROFILES</span><span className="count-pill">{projectInfo.tests.length}</span></div>
         <div className="task-list">{projectInfo.tests.length ? projectInfo.tests.map((task) => <button key={task.label} onClick={() => runIntegratedCommand(task.command)}><FlaskConical size={14} /><span><strong>{task.label}</strong><small>{task.command}</small></span><Play size={12} /></button>) : <div className="sidebar-empty compact"><FlaskConical size={22} /><span>No test runner detected</span></div>}</div>
+        <div className="section-heading"><ChevronDown size={13} /><span>DISCOVERED TESTS</span><span className="count-pill">{discoveredTests.length}</span></div>
+        <div className="test-case-list">{discoveredTests.slice(0, 300).map((test) => <div key={test.id}><button title="Open test" onClick={() => { openFile(test.path); window.setTimeout(() => { editorInstance?.setPosition({ lineNumber: test.line, column: 1 }); editorInstance?.revealLineInCenter(test.line) }, 30) }}><CircleCheck size={11} /><span><strong>{test.name}</strong><small>{test.path}:{test.line}</small></span></button><button title="Run this test" onClick={() => runIntegratedCommand(test.command)}><Play size={11} /></button><button title="Debug this test" onClick={() => { runIntegratedCommand(test.command); notify('Test command started in a dedicated terminal; attach a launch configuration to debug') }}><BugPlay size={11} /></button></div>)}</div>
+        <div className="coverage-summary"><ShieldCheck size={13} /><span>{Object.keys(coverage).length ? `Coverage loaded for ${Object.keys(coverage).length} files` : 'Run coverage to enable editor overlays'}</span></div>
         <div className="section-heading"><ChevronDown size={13} /><span>PROJECT TASKS</span><span className="count-pill">{projectInfo.tasks.length}</span></div>
         <div className="task-list">{projectInfo.tasks.map((task) => <button key={`${task.label}-${task.command}`} onClick={() => runIntegratedCommand(task.command)}><ListChecks size={14} /><span><strong>{task.label}</strong><small>{task.command}</small></span><Play size={12} /></button>)}</div>
       </>
@@ -1168,14 +1513,14 @@ export default function App() {
           { id: 'core.format', name: 'Formatter Core', description: 'Monaco document formatting bridge', icon: 'P', publisher: 'Tungsten' },
           { id: 'core.git', name: 'Git Tools', description: 'Diffs, staging, branches and commits', icon: 'G', publisher: 'Tungsten' },
           { id: 'core.debug', name: 'Debug Adapter Core', description: 'Debug Adapter Protocol transport', icon: 'D', publisher: 'Tungsten' },
-          ...extensions.map((extension) => ({ id: extension.id, name: extension.name, description: extension.description, icon: extension.name[0] || 'E', publisher: extension.publisher })),
+          ...extensions.map((extension) => ({ id: extension.id, name: extension.name, description: extension.description, icon: extension.name[0] || 'E', publisher: `${extension.publisher} · ${extension.verification || 'declarative'}` })),
         ].map((extension) => <div className="extension-card" key={extension.id}><div className={`extension-icon ext-${extension.icon.toLowerCase()}`}>{extension.icon}</div><div><strong>{extension.name}</strong><p>{extension.description}</p><span>{extension.publisher} · Enabled</span></div><Settings size={13} /></div>)}
       </>
     )
     return (
       <>
         <div className="sidebar-title"><span>EXPLORER</span><Ellipsis size={16} /></div>
-        <div className="project-heading"><ChevronDown size={13} /><strong>{workspaceName.toUpperCase()}</strong><span /><TipButton label="Open folder" onClick={openDesktopFolder}><FolderOpen size={14} /></TipButton><TipButton label="Refresh workspace" onClick={refreshWorkspace}><RefreshCw size={13} /></TipButton><TipButton label="New file" onClick={openNewFileDialog}><File size={14} /><Plus size={8} className="mini-plus" /></TipButton></div>
+        <div className="project-heading"><ChevronDown size={13} /><strong>{workspaceName.toUpperCase()}</strong><span>{externalChange && <i className="workspace-change-dot" title={`${externalChange} changed on disk`} />}</span><TipButton label="Open folder" onClick={openDesktopFolder}><FolderOpen size={14} /></TipButton><TipButton label="Refresh workspace" onClick={() => { setExternalChange(null); void refreshWorkspace() }}><RefreshCw size={13} /></TipButton><TipButton label="New file" onClick={openNewFileDialog}><File size={14} /><Plus size={8} className="mini-plus" /></TipButton></div>
         <ExplorerTree files={files} activePath={activePath} openFile={openFile} dirty={dirty} onFileContext={(event, path) => { event.preventDefault(); setContextMenu({ x: event.clientX, y: event.clientY, path }) }} />
         <div className="outline-section">
           <div className="section-heading"><ChevronDown size={13} /><span>OUTLINE</span><span /><Ellipsis size={14} /></div>
@@ -1233,7 +1578,7 @@ export default function App() {
   }
 
   return (
-    <div className="ide" onClick={() => { if (menuOpen) setMenuOpen(null); if (contextMenu) setContextMenu(null) }}>
+    <div className={`ide ${settings.reducedMotion ? 'reduced-motion' : ''} ${settings.highContrast ? 'high-contrast' : ''}`} onClick={() => { if (menuOpen) setMenuOpen(null); if (contextMenu) setContextMenu(null) }}>
       <header className="titlebar">
         <div className="brand-mark" title="Tungsten"><Hammer size={15} strokeWidth={2.4} /></div>
         <button className="menu-mobile"><Menu size={15} /></button>
@@ -1251,7 +1596,7 @@ export default function App() {
           <Search size={12} /><span>{workspaceName} — Tungsten</span><kbd>⌘ K</kbd>
         </button>
         <div className="title-actions">
-          <TipButton label="Tungsten Copilot"><Bot size={15} /></TipButton>
+          <TipButton label={collaborationActive ? `${participants.length} collaborators connected` : 'Live collaboration'} active={collaborationActive} onClick={() => setCollaborationOpen(true)}><UsersRound size={15} /></TipButton><TipButton label="Tungsten Copilot"><Bot size={15} /></TipButton>
           <TipButton label={sidebarVisible ? 'Hide primary sidebar' : 'Show primary sidebar'} active={sidebarVisible} onClick={() => setSidebarVisible((value) => !value)}><PanelLeftClose size={15} /></TipButton>
           <TipButton label={panelOpen ? 'Hide panel' : 'Show panel'} active={panelOpen} onClick={() => setPanelOpen((value) => !value)}><PanelBottomClose size={15} /></TipButton>
           <TipButton label="Toggle side preview" active={sidePreview} onClick={() => setSidePreview((value) => !value)}><Columns2 size={15} /></TipButton>
@@ -1352,11 +1697,16 @@ export default function App() {
                   onMount={(editor) => {
                     setEditorInstance(editor)
                     editor.onDidChangeCursorPosition((event) => setCursor({ line: event.position.lineNumber, column: event.position.column }))
+                    editor.onMouseDown((event: any) => {
+                      const breakpointPath = decodeURIComponent(editor.getModel()?.uri.path || '').replace(/^\/+/, '')
+                      if (event.target.type === monacoApi.editor.MouseTargetType.GUTTER_GLYPH_MARGIN && event.target.position && breakpointPath) toggleBreakpointRef.current(breakpointPath, event.target.position.lineNumber)
+                    })
                     editor.focus()
                   }}
                   options={{
                     fontFamily: "'JetBrains Mono', 'SFMono-Regular', Consolas, monospace",
                     readOnly: activeFile.language === 'diff',
+                    glyphMargin: true,
                     fontSize: settings.fontSize,
                     lineHeight: Math.round(settings.fontSize * 1.62),
                     fontLigatures: true,
@@ -1365,8 +1715,9 @@ export default function App() {
                     renderWhitespace: settings.renderWhitespace ? 'selection' : 'none',
                     stickyScroll: { enabled: settings.stickyScroll },
                     padding: { top: 14, bottom: 20 },
-                    smoothScrolling: true,
-                    cursorSmoothCaretAnimation: 'on',
+                    smoothScrolling: !settings.reducedMotion,
+                    cursorSmoothCaretAnimation: settings.reducedMotion ? 'off' : 'on',
+                    accessibilitySupport: settings.screenReaderOptimized ? 'on' : 'auto',
                     cursorBlinking: 'smooth',
                     renderLineHighlight: 'all',
                     overviewRulerBorder: false,
@@ -1382,6 +1733,7 @@ export default function App() {
               ) : (
                 <div className="empty-editor">
                   <div className="empty-brand"><Hammer size={41} /></div><h2>TUNGSTEN</h2><p>A development environment forged for focus.</p>
+                  <div className="dashboard-cards"><button onClick={openDesktopFolder}><FolderOpen size={16} /><span><strong>Local workspace</strong><small>Open a folder on this computer</small></span></button><button onClick={() => setRemoteModal(true)}><SquareCode size={16} /><span><strong>Remote development</strong><small>SSH, containers, and WSL</small></span></button><button onClick={() => setCollaborationOpen(true)}><UsersRound size={16} /><span><strong>Live collaboration</strong><small>Shared editing and review</small></span></button></div>
                   <div className="empty-actions"><button onClick={() => setProjectModal(true)}>New project <kbd>⇧⌘N</kbd></button><button onClick={openDesktopFolder}>Open folder <kbd>⌘O</kbd></button><button onClick={() => setPalette({ open: true, mode: 'files' })}>Quick open <kbd>⌘P</kbd></button><button onClick={openNewFileDialog}>New file <kbd>⌘N</kbd></button><button onClick={runProject}>Run project <kbd>⌃↵</kbd></button></div>
                 </div>
               )}
@@ -1395,7 +1747,7 @@ export default function App() {
               <div className="resize-handle horizontal" onMouseDown={startPanelResize} />
               <header className="panel-header">
                 <nav>{['PROBLEMS', 'OUTPUT', 'DEBUG CONSOLE', 'TERMINAL'].map((tab) => <button key={tab} className={panelTab === tab ? 'active' : ''} onClick={() => setPanelTab(tab)}>{tab}{tab === 'PROBLEMS' && <span className="tab-count">{problems.length}</span>}</button>)}</nav>
-                <div><span className="terminal-name"><TerminalSquare size={13} /> {window.tungsten ? 'pty' : 'sandbox'} <ChevronDown size={11} /></span><TipButton label="New terminal" onClick={() => { setPanelTab('TERMINAL'); if (window.tungsten && workspaceRoot) setTerminalSessionKey((key) => key + 1); else setTerminalLines((lines) => [...lines, { text: '— new terminal session —', kind: 'muted' }]); window.setTimeout(() => terminalInputRef.current?.focus(), 20) }}><Plus size={14} /></TipButton><TipButton label="Restart terminal" onClick={() => { if (window.tungsten && workspaceRoot) setTerminalSessionKey((key) => key + 1); else setTerminalLines([]) }}><Trash2 size={13} /></TipButton><TipButton label="Maximize panel" onClick={() => setPanelHeight((height) => height > 400 ? 225 : Math.round(window.innerHeight * .62))}><Maximize2 size={13} /></TipButton><TipButton label="Close panel" onClick={() => setPanelOpen(false)}><X size={14} /></TipButton></div>
+                <div><span className="terminal-name"><TerminalSquare size={13} /> {window.tungsten ? 'pty' : 'sandbox'} <ChevronDown size={11} /></span><TipButton label="New terminal" onClick={() => { if (window.tungsten) newTerminal(); else { setPanelTab('TERMINAL'); setTerminalLines((lines) => [...lines, { text: '— new terminal session —', kind: 'muted' }]); window.setTimeout(() => terminalInputRef.current?.focus(), 20) } }}><Plus size={14} /></TipButton><TipButton label="Split terminal" active={terminalSplit} onClick={() => { if (terminalTabs.length < 2) newTerminal(); setTerminalSplit((value) => !value) }}><Columns2 size={13} /></TipButton><TipButton label="Restart terminal" onClick={() => { if (window.tungsten) setTerminalTabs((tabs) => tabs.map((terminal) => terminal.id === activeTerminalId ? { ...terminal, generation: terminal.generation + 1 } : terminal)); else setTerminalLines([]) }}><Trash2 size={13} /></TipButton><TipButton label="Maximize panel" onClick={() => setPanelHeight((height) => height > 400 ? 225 : Math.round(window.innerHeight * .62))}><Maximize2 size={13} /></TipButton><TipButton label="Close panel" onClick={() => setPanelOpen(false)}><X size={14} /></TipButton></div>
               </header>
               {panelContent()}
             </section>}
@@ -1405,7 +1757,7 @@ export default function App() {
 
       <footer className="statusbar">
         <div>
-          <button title="Open a remote window" className="remote-status"><SquareCode size={13} /></button>
+          <button title={remoteConnected ? 'Manage remote connection' : 'Open a remote workspace'} className={`remote-status ${remoteConnected ? 'connected' : ''}`} onClick={() => { setRemoteModal(true); void window.tungsten?.remoteProfiles().then(setRemoteProfiles) }}><SquareCode size={13} /><span>{remoteConnected ? 'SSH' : ''}</span></button>
           <button title="Current branch" onClick={() => { setActivity('source'); setSidebarVisible(true); void refreshGit() }}><GitBranch size={13} /><span>{gitInfo.branch || 'main'}{sourceChanges.length ? '*' : ''}</span></button>
           <button title="Refresh source control" onClick={refreshGit}><RefreshCw size={11} /><span>{sourceChanges.length}</span></button>
           <button title={`${problems.length} language diagnostics`} onClick={() => { setPanelOpen(true); setPanelTab('PROBLEMS') }}><X size={12} /><span>{problems.filter((problem) => problem.severity === 1).length}</span><CircleAlert size={12} /><span>{problems.filter((problem) => problem.severity !== 1).length}</span></button>
@@ -1433,6 +1785,24 @@ export default function App() {
         </div>
       </div>}
 
+      {collaborationOpen && <div className="overlay" onMouseDown={() => setCollaborationOpen(false)}>
+        <section className="collaboration-modal" onMouseDown={(event) => event.stopPropagation()}>
+          <header><span className="modal-icon"><UsersRound size={18} /></span><div><h2>Live collaboration</h2><p>Shared Yjs editing, presence, review comments, and encrypted-room signaling foundations.</p></div><button onClick={() => setCollaborationOpen(false)}><X size={16} /></button></header>
+          <div className="collaboration-connect"><label>Display name<input value={collaborationName} onChange={(event) => setCollaborationName(event.target.value)} /></label><label>Room URL<input value={collaborationUrl} placeholder="ws://host:port/token" onChange={(event) => setCollaborationUrl(event.target.value)} /></label><button onClick={() => { void startCollaboration(false) }}>Host</button><button disabled={!collaborationUrl} onClick={() => { void startCollaboration(true) }}>Join</button></div>
+          <div className="collaboration-body"><section><div className="section-heading"><span>PRESENCE</span><span className="count-pill">{participants.length}</span></div>{participants.map((name) => <div className="participant" key={name}><CircleUserRound size={14} /><span>{name}</span><i /></div>)}<button className="voice-foundation" disabled={!collaborationActive} onClick={() => { void window.tungsten?.sendCollaborationEvent({ type: 'signal', name: collaborationName, action: 'voice-ready' }); notify('Voice-room signaling announced; media permission remains under your control') }}><Mic size={13} /> Voice room ready</button></section><section><div className="section-heading"><span>REVIEW COMMENTS</span><span className="count-pill">{comments.length}</span></div><div className="comment-list">{comments.map((comment, index) => <button key={index} onClick={() => { if (comment.path) openFile(comment.path); if (comment.line) window.setTimeout(() => editorInstance?.setPosition({ lineNumber: comment.line!, column: 1 }), 30) }}><strong>{comment.name}</strong><span>{comment.text}</span><small>{comment.path}{comment.line ? `:${comment.line}` : ''}</small></button>)}</div><div className="comment-input"><input value={commentInput} placeholder="Comment on the current line" onChange={(event) => setCommentInput(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') sendComment() }} /><button disabled={!collaborationActive} onClick={sendComment}><Plus size={12} /></button></div></section></div>
+          <footer>{collaborationActive && <button className="secondary" onClick={() => { void window.tungsten?.leaveCollaboration(); setCollaborationActive(false); setParticipants([]) }}>Leave room</button>}<span /><button className="primary" onClick={() => setCollaborationOpen(false)}>Done</button></footer>
+        </section>
+      </div>}
+
+      {remoteModal && <div className="overlay" onMouseDown={() => setRemoteModal(false)}>
+        <section className="remote-modal" onMouseDown={(event) => event.stopPropagation()}>
+          <header><span className="modal-icon"><SquareCode size={18} /></span><div><h2>Remote development</h2><p>Open code and terminals over SSH, WSL, or a development container.</p></div><button onClick={() => setRemoteModal(false)}><X size={16} /></button></header>
+          <div className="remote-form"><label>Host<input value={sshConfig.host} placeholder="dev.example.com" onChange={(event) => setSshConfig((config) => ({ ...config, host: event.target.value }))} /></label><label>Port<input value={sshConfig.port} inputMode="numeric" onChange={(event) => setSshConfig((config) => ({ ...config, port: event.target.value }))} /></label><label>Username<input value={sshConfig.username} autoComplete="username" onChange={(event) => setSshConfig((config) => ({ ...config, username: event.target.value }))} /></label><label>Remote folder<input value={sshConfig.root} onChange={(event) => setSshConfig((config) => ({ ...config, root: event.target.value }))} /></label><label>Password (optional)<input type="password" value={sshConfig.password} autoComplete="current-password" onChange={(event) => setSshConfig((config) => ({ ...config, password: event.target.value }))} /></label><label>Private key path (optional)<input value={sshConfig.privateKeyPath} placeholder="~/.ssh/id_ed25519" onChange={(event) => setSshConfig((config) => ({ ...config, privateKeyPath: event.target.value }))} /></label></div>
+          <div className="remote-profiles"><div><strong>WSL distributions</strong>{remoteProfiles.wsl.length ? remoteProfiles.wsl.map((distribution) => <button key={distribution} onClick={() => { newTerminal({ kind: 'wsl', id: distribution, label: `WSL: ${distribution}` }); setRemoteModal(false) }}>{distribution}</button>) : <span>No distributions detected</span>}</div><div><strong>Running containers</strong>{remoteProfiles.containers.length ? remoteProfiles.containers.map((container) => <button key={container.id} onClick={() => { newTerminal({ kind: 'container', id: container.id, label: container.name }); setRemoteModal(false) }}>{container.name} · {container.image}</button>) : <span>No containers detected</span>}</div><div><strong>Dev Container</strong><span>{remoteProfiles.devcontainer ? '.devcontainer/devcontainer.json detected; use a running container terminal below.' : 'No configuration in this workspace'}</span></div></div>
+          <footer>{remoteConnected && <button className="secondary" onClick={() => { void window.tungsten?.disconnectRemote(); setRemoteConnected(false); setRemoteModal(false) }}>Disconnect</button>}<span /><button className="secondary" onClick={() => setRemoteModal(false)}>Cancel</button><button className="primary" disabled={!sshConfig.host || !sshConfig.username} onClick={() => { void connectRemote() }}>Connect SSH</button></footer>
+        </section>
+      </div>}
+
       {projectModal && <div className="overlay" onMouseDown={() => setProjectModal(false)}>
         <section className="project-modal" onMouseDown={(event) => event.stopPropagation()}>
           <header><span className="modal-icon"><Rocket size={18} /></span><div><h2>Forge a new project</h2><p>Start with a clean, portable foundation.</p></div><button onClick={() => setProjectModal(false)}><X size={16} /></button></header>
@@ -1457,6 +1827,7 @@ export default function App() {
         <section className="settings-modal" onMouseDown={(event) => event.stopPropagation()}>
           <header><div><span className="modal-icon"><Settings size={17} /></span><div><h2>Editor settings</h2><p>Make the forge yours.</p></div></div><button onClick={() => setSettingsOpen(false)}><X size={17} /></button></header>
           <div className="settings-body">
+            <div className="settings-profiles"><div><strong>Workspace profiles</strong><span>Apply a focused settings preset.</span></div><button onClick={() => setSettings({ ...defaultSettings })}>Focus</button><button onClick={() => setSettings({ ...defaultSettings, highContrast: true, reducedMotion: true, screenReaderOptimized: true })}>Accessible</button><button onClick={() => setSettings({ ...defaultSettings, fontSize: 17, minimap: false })}>Presentation</button></div>
             <label className="range-setting"><div><strong>Font size</strong><span>Controls the editor text size.</span></div><div><input type="range" min="11" max="19" value={settings.fontSize} onChange={(event) => setSettings({ ...settings, fontSize: Number(event.target.value) })} /><output>{settings.fontSize}px</output></div></label>
             {[
               ['Word wrap', 'Wrap long lines at the editor viewport.', 'wordWrap'],
@@ -1464,7 +1835,13 @@ export default function App() {
               ['Sticky scroll', 'Keep surrounding scopes visible while scrolling.', 'stickyScroll'],
               ['Visible whitespace', 'Reveal spaces and tabs in selected text.', 'renderWhitespace'],
               ['Auto save', 'Save changes after a short delay.', 'autosave'],
+              ['Reduced motion', 'Disable non-essential motion and smooth scrolling.', 'reducedMotion'],
+              ['High contrast', 'Increase workbench borders and focus visibility.', 'highContrast'],
+              ['Screen reader mode', 'Optimize editor accessibility and ARIA output.', 'screenReaderOptimized'],
+              ['Product telemetry', 'Share anonymous feature usage; disabled by default.', 'telemetry'],
+              ['Crash reports', 'Allow packaged builds to create local crash diagnostics.', 'crashReports'],
             ].map(([title, description, key]) => <label className="toggle-setting" key={key}><div><strong>{title}</strong><span>{description}</span></div><input type="checkbox" checked={settings[key as keyof SettingsState] as boolean} onChange={(event) => setSettings({ ...settings, [key]: event.target.checked })} /><span className="toggle-track"><i /></span></label>)}
+            <div className="keybinding-editor"><div><strong>Keyboard shortcuts</strong><span>Search and execute all commands from the palette.</span></div><button onClick={() => { setSettingsOpen(false); setPalette({ open: true, mode: 'commands' }); setPaletteQuery('') }}>Open keybinding editor <kbd>Ctrl+K Ctrl+S</kbd></button></div>
           </div>
           <footer><button onClick={() => setSettings(defaultSettings)}>Reset defaults</button><button className="primary" onClick={() => setSettingsOpen(false)}>Done</button></footer>
         </section>

@@ -5,7 +5,7 @@ import '@xterm/xterm/css/xterm.css'
 
 type CommandRequest = { id: number; command: string } | null
 
-export default function DesktopTerminal({ sessionKey, command }: { sessionKey: number; command: CommandRequest }) {
+export default function DesktopTerminal({ sessionKey, command, profile }: { sessionKey: number; command: CommandRequest; profile?: { kind: 'wsl' | 'container'; id: string } }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const terminalRef = useRef<Terminal | null>(null)
   const sessionRef = useRef<string | null>(null)
@@ -77,7 +77,7 @@ export default function DesktopTerminal({ sessionKey, command }: { sessionKey: n
 
     requestAnimationFrame(() => {
       fit()
-      api.createTerminal(terminal.cols || 80, terminal.rows || 24).then(({ id }) => {
+      api.createTerminal(terminal.cols || 80, terminal.rows || 24, profile).then(({ id }) => {
         sessionRef.current = id
         setReady(true)
         terminal.focus()
@@ -94,7 +94,7 @@ export default function DesktopTerminal({ sessionKey, command }: { sessionKey: n
       terminalRef.current = null
       sessionRef.current = null
     }
-  }, [sessionKey])
+  }, [profile, sessionKey])
 
   useEffect(() => {
     if (!ready || !command || !sessionRef.current || !window.tungsten) return
