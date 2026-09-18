@@ -431,3 +431,19 @@ body.outline-view #objects image { opacity: .25; }
 .grad-stop.on { border-color: var(--accent2); transform: translateX(-50%) scale(1.25); z-index: 2; }
 .grad-stop:active { cursor: grabbing; }
 #props-fountain .row { margin-top: 10px; }
+
+
+/* ---------- V6: mesh fill + transparency ---------- */
+#props-mesh .row, #props-transparency .row { gap: 8px; }
+#props-mesh .hint {
+  color: var(--muted, #8b8fa3);
+  font-size: 11px;
+  line-height: 1.45;
+}
+#transp-seg button {
+  flex: 1;
+  font-size: 15px;
+  line-height: 1;
+}
+#mesh-layer circle { transition: r .08s ease; }
+#stage.tool-mesh { cursor: cell; }

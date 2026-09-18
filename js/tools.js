@@ -19,6 +19,7 @@ const TOOLS = [
   { sep: true },
   { id: "knife",   key: "K", name: "Knife (slice objects)", icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="M3 3l11 11-3 3L3 9z" fill="currentColor" fill-opacity=".25"/><path d="M14 14l7 7"/></svg>' },
   { id: "eraser",  key: "X", name: "Eraser (subtract)", icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="M8 20l-5-5a2 2 0 010-2.8l8.5-8.5a2 2 0 012.8 0l4.2 4.2a2 2 0 010 2.8L11 20z" fill="currentColor" fill-opacity=".2"/><path d="M21 20H8"/></svg>' },
+  { id: "mesh",    key: "M", name: "Mesh fill (drag colour nodes)", icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18M15 3v18"/><circle cx="9" cy="9" r="2" fill="currentColor" stroke="none"/><circle cx="15" cy="15" r="2" fill="currentColor" stroke="none"/></svg>' },
   { id: "dropper", key: "I", name: "Eyedropper (pick colour)", icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M17 3a2.8 2.8 0 014 4l-2.5 2.5 1 1-2 2-1-1L8 20.5 3.5 21 4 16.5l8.5-8.5-1-1 2-2 1 1z" fill="currentColor" fill-opacity=".18"/></svg>' },
   { sep: true },
   { id: "pan",     key: "H", name: "Pan", icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M9 11V5.5a1.5 1.5 0 013 0V11m0-4.5a1.5 1.5 0 013 0V11m0-3a1.5 1.5 0 013 0v6.5c0 4-2.5 7-6.5 7-3.4 0-5-1.6-6.7-4.8L3.4 13c-.7-1.4.8-2.7 2-1.8L7 12.7V7a1.5 1.5 0 013-0z"/></svg>' },
@@ -32,6 +33,7 @@ let penState = null;      // {pts:[], curDragging, ...}
 let spacePan = false;
 
 function setTool(id) {
+  if (App.tool === "mesh" && id !== "mesh") { App.meshSel = null; }
   if (App.tool === "pen" && id !== "pen") finishPen(false);
   if (App.tool === "text") commitTextEditor();
   App.tool = id;
@@ -53,6 +55,7 @@ function setTool(id) {
   stage.classList.toggle("tool-knife", id === "knife");
   stage.classList.toggle("tool-eraser", id === "eraser");
   stage.classList.toggle("tool-dropper", id === "dropper");
+  stage.classList.toggle("tool-mesh", id === "mesh");
   setHint(toolHint(id));
   render(); updateUI();
 }
@@ -125,6 +128,7 @@ function onPointerDown(e) {
     case "eraser":
       drag = { mode: "eraser", pts: [[w.x, w.y]] };
       break;
+    case "mesh": if (typeof meshDown === "function") meshDown(e, w); break;
     case "dropper": pickColor(e); break;
     case "envelope": envelopeDown(e, w); break;
   }
@@ -136,6 +140,8 @@ function onPointerMove(e) {
   $("#st-pos").textContent = `${Math.round(w.x)}, ${Math.round(w.y)}`;
 
   if (penState && !drag) { drawPenPreview(penState.pts, constrainPen(w, e.shiftKey), penNearStart(w)); }
+
+  if (App.tool === "mesh" && typeof meshMove === "function") { meshMove(w); }
 
   if (!drag) return;
   switch (drag.mode) {
@@ -186,6 +192,7 @@ function onPointerMove(e) {
 }
 
 function onPointerUp(e) {
+  if (App.tool === "mesh" && typeof meshUp === "function") meshUp();
   if (!drag) return;
   const d = drag; drag = null;
   stage.classList.remove("panning");

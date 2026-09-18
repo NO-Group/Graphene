@@ -38,6 +38,7 @@ npm run dist:linux     # build AppImage + .deb
   close paths by clicking the start point
 - Pencil (B) — freehand drawing, auto-simplified (Ramer–Douglas–Peucker) and
   smoothed into bezier curves
+- Mesh (M) — drag mesh-fill colour nodes directly on the canvas
 - Rectangle (R) with live corner radius, Ellipse (E), Polygon (G), Star (S)
   with adjustable points & inner radius, Line (L)
 - Text (T) — in-place editing, multi-line, 9 font families, bold/italic/align
@@ -144,8 +145,22 @@ Press `?` in the app for the full shortcut list.
   `TrimBox` / `BleedBox` / `MediaBox`
 - Gradients export as native PDF **axial & radial shadings** (multi-stop gradients
   become stitched exponential functions — they stay resolution-independent)
+- **PNG artwork embeds losslessly.** Graphene ships its own DEFLATE decoder and
+  PNG parser, so PNGs become real image XObjects and their alpha channel becomes
+  a PDF `/SMask`. JPEGs pass straight through as `DCTDecode`
+- Text is re-encoded to **WinAnsi**, with sensible fallbacks for characters
+  outside it, so exported strings never carry invalid bytes
 - Transparency via `ExtGState`, text stays **live and selectable** using the
   base-14 fonts, and multi-page documents export as multi-page PDFs
+
+**Mesh fill & transparency**
+- **Mesh fill** — CorelDRAW's signature feature: lay an R×C grid of colour nodes
+  over any shape, drag them, and recolour individual nodes. Colours blend with
+  bicubic (Catmull-Rom) interpolation
+- Exports to PDF as a native **ShadingType 6 Coons patch mesh**, so it stays
+  fully vector in print — not a baked bitmap
+- **Gradient transparency** independent of colour (fade, fade-in, vignette),
+  exported as a PDF luminosity soft mask
 
 **Fountain fills**
 - **Unlimited colour stops** with a draggable ramp: double-click to add a stop,
@@ -169,9 +184,11 @@ Press `?` in the app for the full shortcut list.
 | `js/distort.js` | Envelope & perspective warping (homography solver), knife, eraser, roughen, twirl |
 | `js/pdf.js` | Print-ready PDF 1.7 writer built from scratch: DeviceCMYK/RGB, axial & radial shadings, transparency groups, base-14 fonts, crop marks, bleed |
 | `js/fountain.js` | Multi-stop fountain-fill editor (draggable ramp) and text→curves conversion |
+| `js/mesh.js` | Mesh fill (Coons colour meshes with bicubic interpolation) and gradient transparency |
+| `js/png.js` | DEFLATE inflate + PNG decoder written from scratch, so PNG artwork embeds losslessly in exported PDFs |
 | `sw.js` + `manifest.json` | Offline service worker + PWA install manifest |
 | `desktop/main.js` + `package.json` | Electron shell + electron-builder config for native Windows/macOS/Linux builds |
-| `test/` | 193 automated tests — boolean geometry, tracer, distortion, headless app smoke tests, simulated pointer interaction |
+| `test/` | 314 automated tests — boolean geometry, tracer, distortion, headless app smoke tests, simulated pointer interaction |
 
 ## Tests
 
@@ -192,6 +209,11 @@ npm test
 - `test/pdf.test.js` — 58 tests: CMYK conversion, PDF object graph, xref offset
   integrity, stream `/Length` correctness, shadings, fonts & string escaping,
   transparency, bleed/crop marks, multi-stop gradients, text→curves
+- `test/png.test.js` — 56 tests: the DEFLATE inflater is verified byte-for-byte
+  against Node's `zlib` at every compression level, plus every PNG colour type,
+  bit depth (1/2/4/8/16) and all five row filters
+- `test/mesh.test.js` — 65 tests: mesh interpolation, Coons patch export,
+  gradient transparency soft masks, PNG embedding, and command wiring
 
 The editor itself is vanilla ES2020 + SVG — no frameworks, no build step, and
 the same codebase powers the browser, PWA, and desktop versions.
@@ -206,6 +228,9 @@ the same codebase powers the browser, PWA, and desktop versions.
 | Knife / Eraser | Yes | Yes (boolean-exact, area-conserving) |
 | Print PDF export | Yes | Yes — CMYK, bleed, crop marks, vector shadings |
 | Fountain fills | Unlimited stops | Unlimited stops, draggable ramp, presets |
+| Mesh fill | Yes | Yes — Coons patches, native vector in PDF |
+| Gradient transparency | Yes | Yes — exported as PDF soft masks |
+| Raster embedding | Yes | PNG (with alpha) + JPEG, lossless |
 | Convert to curves | Yes | Yes |
 | Contour & Blend | Yes | Yes |
 | PowerClip | Yes | Yes |

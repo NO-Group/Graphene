@@ -111,6 +111,10 @@ function runCommand(cmd) {
     case "export-pdf": openPDFDialog(); break;
     case "export-pdf-quick": exportPDF({ colorSpace: "cmyk", allPages: true }); break;
     case "text-to-curves": textToCurves(); break;
+    case "mesh-fill": applyMeshFill(); break;
+    case "transp-fade": setTransparencyRamp("fade"); break;
+    case "transp-vignette": setTransparencyRamp("vignette"); break;
+    case "transp-none": setTransparencyRamp("none"); break;
 
     /* --- bitmap tracing --- */
     case "trace": openTraceDialog(); break;
@@ -347,6 +351,15 @@ function updateUI() {
   show("#props-text", one && one.type === "text");
   const paintable = objs.length > 0 && objs.some(o => o.type !== "group" && o.type !== "image");
   show("#props-fill", paintable);
+  const meshy = paintable && one && one.fill && one.fill.type === "mesh";
+  show("#props-mesh", !!meshy);
+  show("#props-transparency", paintable);
+  if (meshy && typeof drawMeshHandles === "function") {
+    const mesh = typeof meshOf === "function" ? meshOf(one) : null;
+    const rI = $("#in-mesh-rows"), cI = $("#in-mesh-cols");
+    if (mesh && rI && document.activeElement !== rI) rI.value = mesh.rows;
+    if (mesh && cI && document.activeElement !== cI) cI.value = mesh.cols;
+  }
   show("#props-stroke", paintable);
   show("#props-effects", objs.length > 0);
   show("#props-color", true);
@@ -526,7 +539,9 @@ $("#btn-italic").addEventListener("click", () => {
 $("#fill-type-seg").addEventListener("click", e => {
   const b = e.target.closest("[data-filltype]");
   if (!b) return;
-  eachPaintable(o => { o.fill.type = b.dataset.filltype; });
+  const ft = b.dataset.filltype;
+  if (ft === "mesh" && typeof applyMeshFill === "function") { applyMeshFill(); return; }
+  eachPaintable(o => { o.fill.type = ft; });
   commit("fill type"); render(); updateUI();
 });
 onInput(P.fillColor, () => { eachPaintable(o => { o.fill.color = P.fillColor.value; o.fill.a = P.fillColor.value; }); render(); }, "fill");
@@ -536,6 +551,25 @@ onInput(P.gradAngle, () => {
   eachPaintable(o => o.fill.angle = +P.gradAngle.value);
   P.angleVal.textContent = P.gradAngle.value + "°"; render();
 }, "gradient angle");
+
+/* mesh fill + transparency (V6) */
+(function wireMeshUI() {
+  const rows = $("#in-mesh-rows"), cols = $("#in-mesh-cols"), col = $("#in-mesh-color");
+  const seg = $("#transp-seg");
+  if (rows) rows.addEventListener("change", () => {
+    if (typeof setMeshSize === "function") setMeshSize(+rows.value || 3, +(cols && cols.value) || 3);
+  });
+  if (cols) cols.addEventListener("change", () => {
+    if (typeof setMeshSize === "function") setMeshSize(+(rows && rows.value) || 3, +cols.value || 3);
+  });
+  if (col) col.addEventListener("input", () => {
+    if (typeof setMeshNodeColor === "function") setMeshNodeColor(col.value);
+  });
+  if (seg) seg.addEventListener("click", e => {
+    const b = e.target.closest("[data-transp]");
+    if (b && typeof setTransparencyRamp === "function") setTransparencyRamp(b.dataset.transp);
+  });
+})();
 
 /* stroke */
 P.strokeOn.addEventListener("change", () => { eachPaintable(o => o.stroke.on = P.strokeOn.checked); commit("stroke"); render(); updateUI(); });

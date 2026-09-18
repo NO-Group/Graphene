@@ -107,6 +107,11 @@
         <hr>
         <button data-cmd="roughen">Roughen Edges</button>
         <button data-cmd="twirl">Twirl</button>
+        <hr>
+        <button data-cmd="mesh-fill">Mesh Fill</button>
+        <button data-cmd="transp-fade">Transparency: Fade</button>
+        <button data-cmd="transp-vignette">Transparency: Vignette</button>
+        <button data-cmd="transp-none">Transparency: Clear</button>
       </div>
     </div>
 
@@ -289,6 +294,7 @@
           <button data-filltype="solid" title="Solid">■</button>
           <button data-filltype="linear" title="Linear gradient">▤</button>
           <button data-filltype="radial" title="Radial gradient">◎</button>
+          <button data-filltype="mesh" title="Mesh fill">⊞</button>
         </div>
         <div class="row" id="fill-solid-row"><label class="grow">Color <input type="color" id="in-fill-color"></label></div>
         <div id="fill-grad-rows">
@@ -297,6 +303,28 @@
             <label class="grow">To <input type="color" id="in-grad-b"></label>
           </div>
           <div class="row" id="grad-angle-row"><label class="grow slider-label">Angle <input type="range" id="in-grad-angle" min="0" max="360"><span id="angle-val">90°</span></label></div>
+        </div>
+      </div>
+
+      <div class="prop-section" id="props-mesh">
+        <h3>Mesh Fill</h3>
+        <div class="row">
+          <label>Rows <input type="number" id="in-mesh-rows" min="2" max="10" value="3"></label>
+          <label>Cols <input type="number" id="in-mesh-cols" min="2" max="10" value="3"></label>
+        </div>
+        <div class="row">
+          <label class="grow">Node colour <input type="color" id="in-mesh-color"></label>
+        </div>
+        <div class="row"><small class="hint">Pick the Mesh tool (M), then drag nodes and recolour them.</small></div>
+      </div>
+
+      <div class="prop-section" id="props-transparency">
+        <h3>Transparency</h3>
+        <div class="row seg" id="transp-seg">
+          <button data-transp="none" title="Opaque">∅</button>
+          <button data-transp="fade" title="Fade out">◢</button>
+          <button data-transp="fade-in" title="Fade in">◣</button>
+          <button data-transp="vignette" title="Vignette">◉</button>
         </div>
       </div>
 
@@ -567,8 +595,10 @@
 <script src="js/pro.js"></script>
 <script src="js/distort.js"></script>
 <script src="js/trace.js"></script>
+<script src="js/png.js"></script>
 <script src="js/pdf.js"></script>
 <script src="js/fountain.js"></script>
+<script src="js/mesh.js"></script>
 <script>
 if ("serviceWorker" in navigator && location.protocol !== "file:") {
   navigator.serviceWorker.register("sw.js").catch(() => {});

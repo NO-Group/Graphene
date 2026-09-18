@@ -67,8 +67,42 @@ function byteLen(s) {
   for (let i = 0; i < s.length; i++) n += s.charCodeAt(i) > 255 ? 2 : 1;
   return n;
 }
+/* Map a JS string into WinAnsiEncoding (cp1252) bytes and escape the
+   PDF string delimiters. Characters outside cp1252 degrade to a similar
+   ASCII form rather than emitting a bogus byte. */
+const _WINANSI = {
+  0x20AC: 0x80, 0x201A: 0x82, 0x0192: 0x83, 0x201E: 0x84, 0x2026: 0x85,
+  0x2020: 0x86, 0x2021: 0x87, 0x02C6: 0x88, 0x2030: 0x89, 0x0160: 0x8A,
+  0x2039: 0x8B, 0x0152: 0x8C, 0x017D: 0x8E, 0x2018: 0x91, 0x2019: 0x92,
+  0x201C: 0x93, 0x201D: 0x94, 0x2022: 0x95, 0x2013: 0x96, 0x2014: 0x97,
+  0x02DC: 0x98, 0x2122: 0x99, 0x0161: 0x9A, 0x203A: 0x9B, 0x0153: 0x9C,
+  0x017E: 0x9E, 0x0178: 0x9F,
+};
+/* best-effort transliteration for common symbols outside cp1252 */
+const _FALLBACK = {
+  0x2192: "->", 0x2190: "<-", 0x2194: "<->", 0x21D2: "=>",
+  0x00D7: "x", 0x2212: "-", 0x2248: "~", 0x2264: "<=", 0x2265: ">=",
+  0x2260: "!=", 0x00B7: ".", 0x2027: ".", 0x25CF: "*", 0x25CB: "o",
+  0x2605: "*", 0x2606: "*", 0x2713: "v", 0x2717: "x",
+};
+function toWinAnsi(str) {
+  let out = "";
+  for (const ch of String(str)) {
+    const cp = ch.codePointAt(0);
+    if (cp < 0x80) { out += ch; continue; }
+    if (_WINANSI[cp] !== undefined) { out += String.fromCharCode(_WINANSI[cp]); continue; }
+    if (cp <= 0xFF) { out += ch; continue; }          // latin-1 maps directly
+    if (_FALLBACK[cp] !== undefined) { out += _FALLBACK[cp]; continue; }
+    out += "?";
+  }
+  return out;
+}
 function pdfEscape(s) {
-  return String(s).replace(/\\/g, "\\\\").replace(/\(/g, "\\(").replace(/\)/g, "\\)");
+  return toWinAnsi(s)
+    .replace(/\\/g, "\\\\")
+    .replace(/\(/g, "\\(")
+    .replace(/\)/g, "\\)")
+    .replace(/[\r\n]/g, " ");
 }
 
 /* ---------- geometry → PDF path operators ---------- */
@@ -201,7 +235,134 @@ function gsFor(ctx, alpha) {
   return ctx.gstates.get(key).name;
 }
 
+/* Gradient transparency -> a luminosity SMask in an ExtGState.
+   The mask is a form XObject painting a greyscale shading over the object's
+   bbox; PDF reads its luminosity as the alpha channel. */
+function alphaMaskGsFor(ctx, o, bb) {
+  const stops = (typeof alphaStops === "function") ? alphaStops(o.fill) : null;
+  if (!stops) return null;
+  const key = `am-${o.id}`;
+  if (ctx.gstates.has(key)) return ctx.gstates.get(key).name;
+
+  const grey = v => {
+    const g = Math.max(0, Math.min(1, v));
+    return `${f3(g)} ${f3(g)} ${f3(g)}`;
+  };
+  /* stitch exponential functions between successive alpha stops */
+  const fns = [], bounds = [], encode = [];
+  for (let i = 0; i < stops.length - 1; i++) {
+    fns.push(ctx.doc.add(
+      `<< /FunctionType 2 /Domain [0 1] /C0 [${grey(stops[i].a)}] /C1 [${grey(stops[i + 1].a)}] /N 1 >>`));
+    if (i > 0) bounds.push(f3(stops[i].p));
+    encode.push("0 1");
+  }
+  const fnId = fns.length === 1 ? fns[0] : ctx.doc.add(
+    `<< /FunctionType 3 /Domain [0 1] /Functions [${fns.map(f => f + " 0 R").join(" ")}] ` +
+    `/Bounds [${bounds.join(" ")}] /Encode [${encode.join(" ")}] >>`);
+
+  const f = o.fill || {};
+  let shDict;
+  if (f.type === "radial") {
+    const cx = bb.x + bb.w / 2, cy = bb.y + bb.h / 2;
+    const rr = Math.max(bb.w, bb.h) / 2 || 1;
+    shDict = `<< /ShadingType 3 /ColorSpace /DeviceRGB ` +
+             `/Coords [${f3(cx)} ${f3(cy)} 0 ${f3(cx)} ${f3(cy)} ${f3(rr)}] ` +
+             `/Function ${fnId} 0 R /Extend [true true] >>`;
+  } else {
+    const a = (f.angle || 0) * Math.PI / 180;
+    const hx = Math.cos(a) / 2, hy = Math.sin(a) / 2;
+    shDict = `<< /ShadingType 2 /ColorSpace /DeviceRGB /Coords [` +
+             `${f3(bb.x + bb.w * (0.5 - hx))} ${f3(bb.y + bb.h * (0.5 - hy))} ` +
+             `${f3(bb.x + bb.w * (0.5 + hx))} ${f3(bb.y + bb.h * (0.5 + hy))}] ` +
+             `/Function ${fnId} 0 R /Extend [true true] >>`;
+  }
+  const shId = ctx.doc.add(shDict);
+
+  const pad = 4;
+  const bx = bb.x - pad, by = bb.y - pad, bw = (bb.w || 1) + pad * 2, bh = (bb.h || 1) + pad * 2;
+  const content = `/Sh sh\n`;
+  const formId = ctx.doc.stream(
+    `/Type /XObject /Subtype /Form /FormType 1 /BBox [${f3(bx)} ${f3(by)} ${f3(bx + bw)} ${f3(by + bh)}] ` +
+    `/Group << /Type /Group /S /Transparency /CS /DeviceGray >> ` +
+    `/Resources << /Shading << /Sh ${shId} 0 R >> >>`, content);
+
+  const gsId = ctx.doc.add(
+    `<< /Type /ExtGState /SMask << /Type /Mask /S /Luminosity /G ${formId} 0 R ` +
+    `/BC [0] >> >>`);
+  const name = `GS${ctx.gstates.size}`;
+  ctx.gstates.set(key, { name, id: gsId });
+  return name;
+}
+
 /* axial / radial shading pattern for a gradient fill */
+/* Mesh fill -> ShadingType 6 (Coons patch mesh), the native PDF construct.
+   Each grid cell becomes one patch with straight edges (control points placed
+   at the thirds), so the result is resolution independent in print. */
+function meshShadingFor(ctx, o, bb) {
+  const key = `mesh-${o.id}`;
+  if (ctx.patterns.has(key)) return ctx.patterns.get(key);
+  const mesh = (typeof meshOf === "function") ? meshOf(o) : (o.fill && o.fill.mesh);
+  if (!mesh) return null;
+
+  const cmyk = ctx.mode === "cmyk";
+  const ncomp = cmyk ? 4 : 3;
+  const bpc = 8, bpcoord = 16, bpflag = 8;
+  const X0 = bb.x, Y0 = bb.y, X1 = bb.x + (bb.w || 1), Y1 = bb.y + (bb.h || 1);
+  const decode = `[${f3(X0)} ${f3(X1)} ${f3(Y0)} ${f3(Y1)}` +
+                 ` ${"0 1 ".repeat(ncomp).trim()}]`;
+
+  const bytes = [];
+  const pushByte = v => bytes.push(Math.max(0, Math.min(255, Math.round(v))));
+  const pushCoord = (v, lo, hi) => {
+    const t = hi > lo ? (v - lo) / (hi - lo) : 0;
+    const n = Math.max(0, Math.min(65535, Math.round(t * 65535)));
+    bytes.push((n >> 8) & 255, n & 255);
+  };
+  const pt = (r, c) => {
+    const n = mesh.nodes[r][c];
+    return { x: bb.x + n.u * (bb.w || 1), y: bb.y + n.v * (bb.h || 1) };
+  };
+  const colOf = (r, c) => {
+    const hex = mesh.nodes[r][c].c;
+    /* _pdfHex2rgb already returns 0..1 floats — do NOT divide again. */
+    return cmyk ? rgbToCmyk01(hex) : _pdfHex2rgb(hex);
+  };
+  /* a point one-third along a straight edge */
+  const lerp = (a, b, t) => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
+
+  for (let r = 0; r < mesh.rows - 1; r++) {
+    for (let c = 0; c < mesh.cols - 1; c++) {
+      const p00 = pt(r, c), p01 = pt(r, c + 1), p11 = pt(r + 1, c + 1), p10 = pt(r + 1, c);
+      /* Coons patch: 12 control points, counter-clockwise from the corner */
+      const edge = [
+        p00, lerp(p00, p01, 1 / 3), lerp(p00, p01, 2 / 3),
+        p01, lerp(p01, p11, 1 / 3), lerp(p01, p11, 2 / 3),
+        p11, lerp(p11, p10, 1 / 3), lerp(p11, p10, 2 / 3),
+        p10, lerp(p10, p00, 1 / 3), lerp(p10, p00, 2 / 3),
+      ];
+      pushByte(0);                                  // new patch
+      for (const p of edge) { pushCoord(p.x, X0, X1); pushCoord(p.y, Y0, Y1); }
+      for (const cc of [colOf(r, c), colOf(r, c + 1), colOf(r + 1, c + 1), colOf(r + 1, c)]) {
+        for (const v of cc) pushByte(v * 255);
+      }
+    }
+  }
+  let data = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    data += String.fromCharCode.apply(null, bytes.slice(i, i + 0x8000));
+  }
+  const shId = ctx.doc.stream(
+    `/ShadingType 6 /ColorSpace /Device${cmyk ? "CMYK" : "RGB"} ` +
+    `/BitsPerCoordinate ${bpcoord} /BitsPerComponent ${bpc} /BitsPerFlag ${bpflag} ` +
+    `/Decode ${decode}`, data);
+  const m = ctx.patternMatrix || "1 0 0 1 0 0";
+  const patId = ctx.doc.add(`<< /Type /Pattern /PatternType 2 /Matrix [${m}] /Shading ${shId} 0 R >>`);
+  const name = `Sh${ctx.shadings.size}`;
+  ctx.shadings.set(key, { name, id: patId });
+  ctx.patterns.set(key, name);
+  return name;
+}
+
 function shadingFor(ctx, o, bb) {
   const f = o.fill;
   const key = `${o.id}`;
@@ -284,19 +445,52 @@ function imageFor(ctx, o) {
   if (!m) return null;
   const kind = m[1].toLowerCase();
   const raw = b64ToLatin1(m[2]);
-  let dict;
+  let dict, data, id;
+
   if (kind === "png") {
-    /* PNG needs re-encoding to a PDF image; fall back to a JPEG-style
-       DCTDecode only for JPEG. For PNG we draw a flat box instead. */
-    return null;
+    /* Decode the PNG ourselves and re-emit the samples as a FlateDecode
+       image. Alpha (or palette tRNS) becomes an /SMask so transparency
+       survives into print. */
+    let img;
+    try {
+      img = decodePNG(latin1ToBytes(raw));
+    } catch (e) {
+      return null;                       // corrupt PNG: caller draws a box
+    }
+    const body = bytesToLatin1(zlibStore(img.rgb));
+    let smask = "";
+    if (img.alpha && !allOpaque(img.alpha)) {
+      const aId = ctx.doc.stream(
+        `/Type /XObject /Subtype /Image /Width ${img.w} /Height ${img.h} ` +
+        `/ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /FlateDecode`,
+        bytesToLatin1(zlibStore(img.alpha)));
+      smask = ` /SMask ${aId} 0 R`;
+    }
+    dict = `/Type /XObject /Subtype /Image /Width ${img.w} /Height ${img.h} ` +
+           `/ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /FlateDecode${smask}`;
+    data = body;
+  } else {
+    /* JPEG passes through untouched — DCTDecode is native to PDF. */
+    const dims = jpegSize(raw);
+    if (!dims) return null;
+    dict = `/Type /XObject /Subtype /Image /Width ${dims.w} /Height ${dims.h} ` +
+           `/ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode`;
+    data = raw;
   }
-  const dims = jpegSize(raw) || { w: 1, h: 1 };
-  dict = `/Type /XObject /Subtype /Image /Width ${dims.w} /Height ${dims.h} ` +
-         `/ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode`;
-  const id = ctx.doc.stream(dict, raw);
+
+  id = ctx.doc.stream(dict, data);
   const name = `Im${ctx.xobjects.size}`;
   ctx.xobjects.set(o.id, { name, id });
   return name;
+}
+function allOpaque(a) {
+  for (let i = 0; i < a.length; i++) if (a[i] !== 255) return false;
+  return true;
+}
+function latin1ToBytes(s) {
+  const u = new Uint8Array(s.length);
+  for (let i = 0; i < s.length; i++) u[i] = s.charCodeAt(i) & 255;
+  return u;
 }
 function b64ToLatin1(b64) {
   if (typeof atob === "function") return atob(b64);
@@ -334,6 +528,11 @@ function emitObject(o, ctx) {
 
   ops.push("q");
   if (o.opacity < 1) ops.push(`/${gsFor(ctx, o.opacity)} gs`);
+  /* gradient transparency -> luminosity soft mask */
+  if (o.fill && o.fill.alphaStops) {
+    const am = alphaMaskGsFor(ctx, o, localBBox(o));
+    if (am) ops.push(`/${am} gs`);
+  }
 
   /* rotation about the object's centre (y-flipped space: negate the angle) */
   if (o.rot) {
@@ -371,7 +570,7 @@ function emitObject(o, ctx) {
   const s = o.stroke || { on: false };
   const hasFill = f.type && f.type !== "none" && o.type !== "line";
   const hasStroke = s.on && s.w > 0;
-  const grad = hasFill && (f.type === "linear" || f.type === "radial");
+  const grad = hasFill && (f.type === "linear" || f.type === "radial" || f.type === "mesh");
   const evenOdd = (o.subpaths && o.subpaths.length > 1) || (o.type === "path" && !o.closed);
 
   if (hasStroke) {
@@ -385,7 +584,8 @@ function emitObject(o, ctx) {
   if (grad) {
     /* clip to the path, paint the shading, then stroke separately */
     const bb = localBBox(o);
-    const name = shadingFor(ctx, o, bb);
+    const name = (f.type === "mesh") ? meshShadingFor(ctx, o, bb) : shadingFor(ctx, o, bb);
+    if (!name) { ops.push("Q"); return; }
     ops.push("q");
     ops.push(pathOps + (evenOdd ? "W* n" : "W n"));
     ops.push("/Pattern cs");
@@ -494,6 +694,10 @@ if (typeof document !== "undefined" && typeof $ === "function" && $("#pdf-modal"
       marks: $("#pdf-marks").checked,
     });
   });
+}
+
+if (typeof decodePNG === "undefined" && typeof require === "function") {
+  try { var { decodePNG, zlibStore, bytesToLatin1 } = require("./png.js"); } catch (e) {}
 }
 
 if (typeof module !== "undefined" && module.exports) {

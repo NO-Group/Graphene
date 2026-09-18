@@ -168,8 +168,53 @@ function renderObj(o) {
     default: return null;
   }
   el.dataset.id = o.id;
+
+  /* Mesh fill: paint a clipped lattice of interpolated quads behind the
+     shape's own stroke. Falls back silently if mesh.js is absent. */
+  if (o.fill && o.fill.type === "mesh" && o.type !== "group" &&
+      typeof buildMeshPaint === "function") {
+    const bb = localBBox(o);
+    const paint = buildMeshPaint(o, bb);
+    if (paint) {
+      const cid = `meshclip-${o.id}`;
+      let cp = document.getElementById(cid);
+      if (cp) cp.remove();
+      cp = svgEl("clipPath", { id: cid, clipPathUnits: "userSpaceOnUse" });
+      const shape = el.cloneNode(true);
+      shape.removeAttribute("filter");
+      cp.appendChild(shape);
+      document.getElementById("defs").appendChild(cp);
+
+      const wrap = svgEl("g");
+      paint.setAttribute("clip-path", `url(#${cid})`);
+      wrap.appendChild(paint);
+      el.setAttribute("fill", "none");
+      const s = o.stroke;
+      if (s && s.on && s.w > 0) {
+        el.setAttribute("stroke", s.color);
+        el.setAttribute("stroke-width", s.w);
+      } else {
+        el.setAttribute("stroke", "none");
+      }
+      const fl = ensureFilter(o);
+      if (fl) wrap.setAttribute("filter", fl);
+      wrap.appendChild(el);
+      wrap.dataset.id = o.id;
+      if (o.opacity < 1) wrap.setAttribute("opacity", o.opacity);
+      if (o.rot) {
+        const b = localBBox(o);
+        wrap.setAttribute("transform", `rotate(${o.rot} ${b.x + b.w / 2} ${b.y + b.h / 2})`);
+      }
+      return wrap;
+    }
+  }
+
   if (o.type !== "group") applyPaint(el, o);
   if (o.opacity < 1) el.setAttribute("opacity", o.opacity);
+  if (typeof ensureAlphaMask === "function") {
+    const mk = ensureAlphaMask(o);
+    if (mk) el.setAttribute("mask", mk);
+  }
   if (o.rot) {
     const b = localBBox(o);
     el.setAttribute("transform", `rotate(${o.rot} ${b.x + b.w / 2} ${b.y + b.h / 2})`);
@@ -194,7 +239,7 @@ function render() {
   gObjects.innerHTML = "";
   // prune defs whose owning object no longer exists
   $$("#defs > *").forEach(g => {
-    const m = /^(grad|fx|tp|clip)-(.+)$/.exec(g.id || "");
+    const m = /^(grad|fx|tp|clip|meshclip|alpha|alphagrad)-(.+)$/.exec(g.id || "");
     if (m && !findObj(m[2])) g.remove();
   });
   for (const o of App.objects) { const el = renderObj(o); if (el) gObjects.appendChild(el); }
@@ -261,6 +306,7 @@ const HANDLES = [
 function renderOverlay() {
   gOverlay.innerHTML = "";
   if (App.tool === "node") { renderNodeOverlay(); return; }
+  if (App.tool === "mesh" && typeof drawMeshHandles === "function") { drawMeshHandles(); return; }
   const objs = selectedObjs();
   if (!objs.length) return;
   const z = App.zoom;
