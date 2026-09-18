@@ -1,7 +1,7 @@
 /* Graphene test runner — node test/run.js */
 const { execFileSync } = require("child_process");
 const path = require("path");
-const suites = ["boolean.test.js", "app.smoke.js", "interaction.test.js"];
+const suites = ["boolean.test.js", "trace.test.js", "distort.test.js", "app.smoke.js", "interaction.test.js"];
 let failed = 0;
 for (const s of suites) {
   console.log(`\n\x1b[1m▶ ${s}\x1b[0m`);

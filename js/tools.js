@@ -17,10 +17,14 @@ const TOOLS = [
   { id: "line",    key: "L", name: "Line", icon: '<svg viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 20L20 4"/><circle cx="4" cy="20" r="1.6" fill="currentColor" stroke="none"/><circle cx="20" cy="4" r="1.6" fill="currentColor" stroke="none"/></svg>' },
   { id: "text",    key: "T", name: "Text", icon: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M4 4h16v4h-2.2V6.5H13.2v11h2.3V20H8.5v-2.5h2.3v-11H6.2V8H4z"/></svg>' },
   { sep: true },
+  { id: "knife",   key: "K", name: "Knife (slice objects)", icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="M3 3l11 11-3 3L3 9z" fill="currentColor" fill-opacity=".25"/><path d="M14 14l7 7"/></svg>' },
+  { id: "eraser",  key: "X", name: "Eraser (subtract)", icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="M8 20l-5-5a2 2 0 010-2.8l8.5-8.5a2 2 0 012.8 0l4.2 4.2a2 2 0 010 2.8L11 20z" fill="currentColor" fill-opacity=".2"/><path d="M21 20H8"/></svg>' },
+  { id: "dropper", key: "I", name: "Eyedropper (pick colour)", icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M17 3a2.8 2.8 0 014 4l-2.5 2.5 1 1-2 2-1-1L8 20.5 3.5 21 4 16.5l8.5-8.5-1-1 2-2 1 1z" fill="currentColor" fill-opacity=".18"/></svg>' },
+  { sep: true },
   { id: "pan",     key: "H", name: "Pan", icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M9 11V5.5a1.5 1.5 0 013 0V11m0-4.5a1.5 1.5 0 013 0V11m0-3a1.5 1.5 0 013 0v6.5c0 4-2.5 7-6.5 7-3.4 0-5-1.6-6.7-4.8L3.4 13c-.7-1.4.8-2.7 2-1.8L7 12.7V7a1.5 1.5 0 013-0z"/></svg>' },
 ];
 
-const DRAW_TOOLS = ["pen", "pencil", "rect", "ellipse", "polygon", "star", "line"];
+const DRAW_TOOLS = ["pen", "pencil", "rect", "ellipse", "polygon", "star", "line", "knife", "eraser", "dropper"];
 
 /* drag state machine */
 let drag = null;          // {mode, ...}
@@ -46,6 +50,9 @@ function setTool(id) {
   stage.classList.toggle("tool-pan", id === "pan");
   stage.classList.toggle("tool-draw", DRAW_TOOLS.includes(id) || id === "node");
   stage.classList.toggle("tool-text", id === "text");
+  stage.classList.toggle("tool-knife", id === "knife");
+  stage.classList.toggle("tool-eraser", id === "eraser");
+  stage.classList.toggle("tool-dropper", id === "dropper");
   setHint(toolHint(id));
   render(); updateUI();
 }
@@ -63,6 +70,10 @@ function toolHint(id) {
     line: "Drag to draw · Shift constrains to 45°",
     text: "Click on canvas to place text · Esc or click outside finishes editing",
     pan: "Drag to pan · scroll to zoom",
+    knife: "Drag a line across objects to slice them in two · cuts the selection, or everything if nothing is selected",
+    eraser: "Drag to erase · [ and ] change brush size · erases from the selection, or everything if nothing is selected",
+    dropper: "Click any object to copy its fill/stroke onto the current selection",
+    envelope: "Drag the 4 corner handles · Enter applies · Esc cancels",
   }[id] || "";
 }
 
@@ -108,6 +119,14 @@ function onPointerDown(e) {
       drag = { mode: "draw", tool: App.tool, start: snapPt(w), obj: null, alt: e.altKey };
       break;
     case "text": textDown(e, w); break;
+    case "knife":
+      drag = { mode: "knife", start: w, cur: w };
+      break;
+    case "eraser":
+      drag = { mode: "eraser", pts: [[w.x, w.y]] };
+      break;
+    case "dropper": pickColor(e); break;
+    case "envelope": envelopeDown(e, w); break;
   }
   if (drag) stage.setPointerCapture(e.pointerId);
 }
@@ -144,6 +163,25 @@ function onPointerMove(e) {
       renderGuides(); drawRulers();
       break;
     }
+    case "knife": {
+      let p = w;
+      if (e.shiftKey) {
+        const dx = w.x - drag.start.x, dy = w.y - drag.start.y;
+        if (Math.abs(dx) > Math.abs(dy)) p = { x: w.x, y: drag.start.y };
+        else p = { x: drag.start.x, y: w.y };
+      }
+      drag.cur = p;
+      drawKnifeLine(drag.start, p);
+      break;
+    }
+    case "eraser":
+      drag.pts.push([w.x, w.y]);
+      drawEraserTrail(drag.pts, App.eraserSize || 12);
+      break;
+    case "envelope":
+      envState.quad[drag.ei] = [snapVal(w.x), snapVal(w.y)];
+      drawEnvelopeHandles();
+      break;
   }
 }
 
@@ -183,6 +221,16 @@ function onPointerUp(e) {
       drawPenPreview(penState.pts, null, false);
       break;
     case "node-move": case "node-handle": commit("edit nodes"); break;
+    case "knife":
+      clearKnifeLine();
+      knifeCut(d.start.x, d.start.y, d.cur.x, d.cur.y);
+      break;
+    case "eraser":
+      clearEraserTrail();
+      eraseStroke(d.pts, (App.eraserSize || 12) / 2);
+      break;
+    case "envelope":
+      break;
   }
   updateUI();
 }
@@ -761,3 +809,74 @@ window.addEventListener("keyup", e => {
     if (App.tool !== "pan") stage.classList.remove("tool-pan");
   }
 });
+
+/* ============================================================
+   V4 tool helpers — knife preview, eraser trail, eyedropper,
+   envelope handle picking
+   ============================================================ */
+function drawKnifeLine(a, b) {
+  let l = $("#knife-line");
+  if (!l) {
+    l = svgEl("line", {
+      id: "knife-line", stroke: "#ff5c7a", "stroke-width": 1.5 / App.zoom,
+      "stroke-dasharray": `${6 / App.zoom} ${4 / App.zoom}`, "pointer-events": "none"
+    });
+    gOverlay.appendChild(l);
+  }
+  l.setAttribute("x1", a.x); l.setAttribute("y1", a.y);
+  l.setAttribute("x2", b.x); l.setAttribute("y2", b.y);
+}
+function clearKnifeLine() { const l = $("#knife-line"); if (l) l.remove(); }
+
+function drawEraserTrail(pts, size) {
+  let p = $("#eraser-trail");
+  if (!p) {
+    p = svgEl("path", {
+      id: "eraser-trail", fill: "none", stroke: "rgba(255,92,122,.45)",
+      "stroke-linecap": "round", "stroke-linejoin": "round", "pointer-events": "none"
+    });
+    gOverlay.appendChild(p);
+  }
+  p.setAttribute("stroke-width", size);
+  p.setAttribute("d", pts.map((q, i) => `${i ? "L" : "M"} ${round2(q[0])} ${round2(q[1])}`).join(" "));
+}
+function clearEraserTrail() { const p = $("#eraser-trail"); if (p) p.remove(); }
+
+/* eyedropper: copy the clicked object's paint onto the selection */
+function pickColor(e) {
+  const src = hitObject(e);
+  if (!src) { setHint("Eyedropper: click an object"); return; }
+  const targets = selectedObjs().filter(o => o.id !== src.id);
+  if (!targets.length) {
+    App.pickedPaint = { fill: JSON.parse(JSON.stringify(src.fill)), stroke: JSON.parse(JSON.stringify(src.stroke)) };
+    setHint(`Picked ${src.fill && src.fill.type === "solid" ? src.fill.color : src.fill.type} — now select objects and click again to apply`);
+    return;
+  }
+  const walk = o => {
+    if (o.type === "group") { o.children.forEach(walk); return; }
+    if (o.type === "image") return;
+    o.fill = JSON.parse(JSON.stringify(src.fill));
+    o.stroke = JSON.parse(JSON.stringify(src.stroke));
+  };
+  targets.forEach(walk);
+  commit("pick colour");
+  render(); updateUI();
+  setHint(`Applied ${src.name || cap(src.type)}'s style to ${targets.length} object${targets.length === 1 ? "" : "s"} ✓`);
+}
+
+/* envelope corner grab */
+function envelopeDown(e, w) {
+  if (!envState) { setTool("select"); return; }
+  const t = e.target.getAttribute && e.target.getAttribute("data-env");
+  if (t !== null && t !== undefined) {
+    drag = { mode: "envelope", ei: +t };
+    return;
+  }
+  // click outside the handles: pick the nearest corner within range
+  let best = -1, bd = 14 / App.zoom;
+  envState.quad.forEach((p, i) => {
+    const d = Math.hypot(p[0] - w.x, p[1] - w.y);
+    if (d < bd) { bd = d; best = i; }
+  });
+  if (best >= 0) drag = { mode: "envelope", ei: best };
+}

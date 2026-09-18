@@ -108,6 +108,17 @@ function runCommand(cmd) {
     case "preset-hd": setPageSize(1920, 1080); break;
     case "preset-card": setPageSize(1050, 600); break;
 
+    /* --- bitmap tracing --- */
+    case "trace": openTraceDialog(); break;
+    case "trace-quick": powerTrace({ mode: "color", colors: 16, detail: 1, smooth: true }); break;
+    case "trace-bw": powerTrace({ mode: "bw", threshold: 128, detail: 1, smooth: true }); break;
+
+    /* --- distortion --- */
+    case "envelope": startEnvelope("envelope"); break;
+    case "perspective": startEnvelope("perspective"); break;
+    case "roughen": roughenSelection(); break;
+    case "twirl": twirlSelection(); break;
+
     /* --- view --- */
     case "toggle-outline":
       document.body.classList.toggle("outline-view");
@@ -337,6 +348,8 @@ function updateUI() {
   show("#props-color", true);
   show("#props-shaping", objs.length > 1);
   show("#props-contour", objs.length > 0);
+  show("#props-distort", objs.length > 0);
+  show("#props-bitmap", objs.some(o => o.type === "image"));
   show("#props-textpath", !!(one && one.type === "text" && one.onPath));
   if (one && one.type === "text" && one.onPath) {
     const po = $("#in-path-offset"), pv = $("#path-offset-val"), ps = $("#in-path-side");
@@ -679,13 +692,18 @@ window.addEventListener("keydown", e => {
     case "l": case "L": setTool("line"); break;
     case "t": case "T": setTool("text"); break;
     case "h": case "H": setTool("pan"); break;
+    case "k": case "K": setTool("knife"); break;
+    case "x": case "X": setTool("eraser"); break;
+    case "i": case "I": setTool("dropper"); break;
     case "Escape":
-      if (App.tool === "pen" && penState) { penState = null; clearPenPreview(); render(); }
+      if (App.tool === "envelope") { cancelEnvelope(); }
+      else if (App.tool === "pen" && penState) { penState = null; clearPenPreview(); render(); }
       else if (!$("#modal").hidden) $("#modal").hidden = true;
       else { App.selection = []; App.nodeEdit.sel = []; render(); updateUI(); }
       break;
     case "Enter":
-      if (App.tool === "pen") finishPen(false);
+      if (App.tool === "envelope") applyEnvelope();
+      else if (App.tool === "pen") finishPen(false);
       break;
     case "Delete": case "Backspace":
       e.preventDefault(); deleteSelection(); break;
@@ -693,8 +711,14 @@ window.addEventListener("keydown", e => {
     case "ArrowRight": nudge(e, 1, 0); break;
     case "ArrowUp": nudge(e, 0, -1); break;
     case "ArrowDown": nudge(e, 0, 1); break;
-    case "[": reorder("back"); break;
-    case "]": reorder("front"); break;
+    case "[":
+      if (App.tool === "eraser") { App.eraserSize = clamp((App.eraserSize || 12) - 4, 2, 200); setHint(`Eraser size ${App.eraserSize}`); }
+      else reorder("back");
+      break;
+    case "]":
+      if (App.tool === "eraser") { App.eraserSize = clamp((App.eraserSize || 12) + 4, 2, 200); setHint(`Eraser size ${App.eraserSize}`); }
+      else reorder("front");
+      break;
     case "+": case "=": runCommand("zoom-in"); break;
     case "-": runCommand("zoom-out"); break;
     case "1": e.shiftKey ? zoomFit() : runCommand("zoom-100"); break;

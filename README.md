@@ -47,6 +47,26 @@ npm run dist:linux     # build AppImage + .deb
 - Strokes with width, color, solid/dashed/dotted styles
 - Per-object opacity
 
+**PowerTRACE — bitmap to vector**
+- Converts any imported image (PNG/JPG/WebP/GIF) into **editable vector paths**
+- Median-cut colour quantisation refined by **Lloyd/k-means** iterations, so
+  flat-colour artwork comes back with its exact original colours
+- **Moore-neighbour contour tracing** with 8-connectivity, Ramer–Douglas–Peucker
+  simplification, and optional bezier smoothing
+- Colour mode (2–48 colours) or silhouette/line-art mode with an adjustable
+  threshold; result arrives as a grouped, fully editable path set
+
+**Distortion & destructive editing**
+- **Envelope** — bilinear 4-corner warp; drag the handles, Enter applies
+- **Perspective** — true projective homography (not a fake shear), corners land
+  exactly where you put them
+- **Knife (K)** — drag a line to slice objects cleanly in two; Shift constrains
+  to horizontal/vertical; area is provably conserved across the cut
+- **Eraser (X)** — paint to subtract geometry, `[` / `]` resize the brush;
+  fully-erased objects are removed
+- **Eyedropper (I)** — copy fill + stroke from one object onto a selection
+- **Roughen** and **Twirl** distortion effects
+
 **Boolean shaping engine** (the CorelDRAW *Shaping* docker, done properly)
 - **Weld · Trim · Intersect · Exclude · Front−Back · Back−Front · Simplify ·
   Create Boundary** — all eight operations
@@ -127,9 +147,11 @@ Press `?` in the app for the full shortcut list.
 | `js/extras.js` | Rulers & guides, smart-guide snapping targets, context menu, image/SVG import (incl. a path-`d` parser), combine/break-apart, lock tools |
 | `js/boolean.js` | Martinez–Rueda–Feito polygon clipper (sweep line, event queue, contour reconstruction) + the eight shaping commands |
 | `js/pro.js` | Multi-page documents, CMYK/HSB colour, palette, text-on-path, contour, blend, PowerClip, auto-save recovery, dimension readout |
+| `js/trace.js` | PowerTRACE: quantisation (median-cut + k-means), Moore-neighbour contour tracing, RDP simplification, bezier smoothing |
+| `js/distort.js` | Envelope & perspective warping (homography solver), knife, eraser, roughen, twirl |
 | `sw.js` + `manifest.json` | Offline service worker + PWA install manifest |
 | `desktop/main.js` + `package.json` | Electron shell + electron-builder config for native Windows/macOS/Linux builds |
-| `test/` | 74 automated tests — boolean geometry, headless app smoke tests, simulated pointer interaction |
+| `test/` | 135 automated tests — boolean geometry, tracer, distortion, headless app smoke tests, simulated pointer interaction |
 
 ## Tests
 
@@ -139,6 +161,9 @@ npm test
 ```
 
 - `test/boolean.test.js` — 20 geometry assertions against known-exact areas
+- `test/trace.test.js` — 24 tests: contour tracing, RDP, colour quantisation
+- `test/distort.test.js` — 29 tests: homography exactness, envelope, knife
+  (area conservation), eraser, roughen, twirl
 - `test/app.smoke.js` — boots the real `index.html` in jsdom and exercises
   shaping, pages, colour models, contour, blend, PowerClip, text-on-path,
   undo/redo, export and rendering
@@ -153,6 +178,9 @@ the same codebase powers the browser, PWA, and desktop versions.
 | | CorelDRAW | Graphene |
 |---|---|---|
 | Boolean shaping | Weld/Trim/Intersect/Simplify/Boundary | All of them, exact clipper, 20 unit tests |
+| Bitmap tracing | PowerTRACE | PowerTRACE (quantise + k-means + contour trace) |
+| Envelope / Perspective | Yes | Yes (true projective homography) |
+| Knife / Eraser | Yes | Yes (boolean-exact, area-conserving) |
 | Contour & Blend | Yes | Yes |
 | PowerClip | Yes | Yes |
 | Text on path | Yes | Yes |

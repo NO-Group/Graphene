@@ -88,6 +88,26 @@
     </div>
 
     <div class="menu" data-menu>
+      <button class="menu-title">Bitmap</button>
+      <div class="dropdown">
+        <button data-cmd="trace">PowerTRACE — Bitmap to Vector…</button>
+        <button data-cmd="trace-quick">Quick Trace (16 colours)</button>
+        <button data-cmd="trace-bw">Trace as Silhouette</button>
+      </div>
+    </div>
+
+    <div class="menu" data-menu>
+      <button class="menu-title">Effects</button>
+      <div class="dropdown">
+        <button data-cmd="envelope">Envelope Distort</button>
+        <button data-cmd="perspective">Add Perspective</button>
+        <hr>
+        <button data-cmd="roughen">Roughen Edges</button>
+        <button data-cmd="twirl">Twirl</button>
+      </div>
+    </div>
+
+    <div class="menu" data-menu>
       <button class="menu-title">Text</button>
       <div class="dropdown">
         <button data-cmd="text-on-path">Fit Text to Path</button>
@@ -337,6 +357,31 @@
         </div>
       </div>
 
+      <div class="prop-section" id="props-distort">
+        <h3>Distort</h3>
+        <div class="row btn-row">
+          <button data-cmd="envelope">Envelope</button>
+          <button data-cmd="perspective">Perspective</button>
+        </div>
+        <div class="row">
+          <label>Rough <input type="number" id="in-rough-amt" min="0.5" max="200" step="0.5" value="6"></label>
+          <label>Freq <input type="number" id="in-rough-freq" min="1" max="60" value="8"></label>
+          <button id="btn-roughen">Roughen</button>
+        </div>
+        <div class="row">
+          <label>Twirl° <input type="number" id="in-twirl-deg" min="-720" max="720" step="5" value="45"></label>
+          <button id="btn-twirl">Twirl</button>
+        </div>
+      </div>
+
+      <div class="prop-section" id="props-bitmap">
+        <h3>Bitmap</h3>
+        <div class="row btn-row">
+          <button data-cmd="trace">PowerTRACE…</button>
+          <button data-cmd="trace-quick">Quick Trace</button>
+        </div>
+      </div>
+
       <div class="prop-section" id="props-textpath">
         <h3>Text on Path</h3>
         <div class="row"><label class="grow slider-label">Offset <input type="range" id="in-path-offset" min="0" max="100" value="0"><span id="path-offset-val">0%</span></label></div>
@@ -389,6 +434,43 @@
 
 <div id="ctx-menu" hidden></div>
 
+<div id="trace-modal" hidden>
+  <div id="trace-card">
+    <h2>PowerTRACE — Bitmap to Vector</h2>
+    <p class="dim">Converts the selected image into editable vector paths.</p>
+    <div class="trace-row">
+      <label>Mode</label>
+      <select id="trace-mode">
+        <option value="color">Colour artwork</option>
+        <option value="bw">Silhouette / line art</option>
+      </select>
+    </div>
+    <div class="trace-row" id="trace-color-row">
+      <label>Colours</label>
+      <input type="range" id="trace-colors" min="2" max="48" value="12">
+      <span id="trace-colors-val">12</span>
+    </div>
+    <div class="trace-row" id="trace-bw-row" style="display:none">
+      <label>Threshold</label>
+      <input type="range" id="trace-threshold" min="1" max="254" value="128">
+      <span id="trace-threshold-val">128</span>
+    </div>
+    <div class="trace-row">
+      <label>Detail</label>
+      <input type="range" id="trace-detail" min="0.2" max="6" step="0.2" value="1">
+      <span id="trace-detail-val">1.0</span>
+    </div>
+    <div class="trace-row">
+      <label class="chk"><input type="checkbox" id="trace-smooth" checked> Smooth curves</label>
+      <label class="chk"><input type="checkbox" id="trace-replace" checked> Replace original</label>
+    </div>
+    <div class="trace-actions">
+      <button id="trace-cancel">Cancel</button>
+      <button id="trace-run" class="primary">Trace</button>
+    </div>
+  </div>
+</div>
+
 <div id="modal" hidden>
   <div id="modal-card">
     <h2>Keyboard Shortcuts</h2>
@@ -420,6 +502,10 @@
       <b>Ctrl+Y</b><span>Wireframe / outline view</span>
       <b>Alt+click +</b><span>Duplicate the current page</span>
       <b>Palette click</b><span>Set fill · Shift+click sets stroke</span>
+      <b>K / X / I</b><span>Knife (slice) · Eraser · Eyedropper</span>
+      <b>[ / ] with eraser</b><span>Shrink / grow the eraser brush</span>
+      <b>Shift with knife</b><span>Constrain the cut to horizontal / vertical</span>
+      <b>Enter / Esc in envelope</b><span>Apply / cancel the distortion</span>
     </div>
     <button id="modal-close">Close</button>
   </div>
@@ -432,6 +518,8 @@
 <script src="js/ui.js"></script>
 <script src="js/extras.js"></script>
 <script src="js/pro.js"></script>
+<script src="js/distort.js"></script>
+<script src="js/trace.js"></script>
 <script>
 if ("serviceWorker" in navigator && location.protocol !== "file:") {
   navigator.serviceWorker.register("sw.js").catch(() => {});
