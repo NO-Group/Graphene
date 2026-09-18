@@ -108,31 +108,162 @@ function meshNodePos(mesh, r, c) {
   return { u: n.u, v: n.v };
 }
 
+/* ---------- Coons patch geometry ----------
+   A mesh cell is a Coons patch bounded by four CUBIC curves. The curves are
+   derived from the node grid with Catmull-Rom tangents, so an edge shared by
+   two cells resolves to identical control points and the surface has no
+   cracks. Both the on-canvas renderer and the PDF exporter evaluate THIS
+   surface, which is what keeps the screen and the print identical. */
+
+const _P = (x, y) => ({ x, y });
+const _gridPt = (mesh, r, c) => _P(mesh.nodes[r][c].u, mesh.nodes[r][c].v);
+
+/* Bezier controls for segment i -> i+1 of a polyline, Catmull-Rom style.
+   At the ends we EXTRAPOLATE a phantom point (2*p1 - p2) rather than clamping
+   to the endpoint. Clamping halves the end tangent, which makes an evenly
+   spaced grid bulge instead of staying flat. */
+function _segCtrl(P, i) {
+  const n = P.length;
+  const p1 = P[i], p2 = P[i + 1];
+  const p0 = i - 1 >= 0 ? P[i - 1] : _P(2 * p1.x - p2.x, 2 * p1.y - p2.y);
+  const p3 = i + 2 < n ? P[i + 2] : _P(2 * p2.x - p1.x, 2 * p2.y - p1.y);
+  return [
+    _P(p1.x + (p2.x - p0.x) / 6, p1.y + (p2.y - p0.y) / 6),
+    _P(p2.x - (p3.x - p1.x) / 6, p2.y - (p3.y - p1.y) / 6),
+  ];
+}
+function _rowPts(mesh, r) {
+  const out = [];
+  for (let c = 0; c < mesh.cols; c++) out.push(_gridPt(mesh, r, c));
+  return out;
+}
+function _colPts(mesh, c) {
+  const out = [];
+  for (let r = 0; r < mesh.rows; r++) out.push(_gridPt(mesh, r, c));
+  return out;
+}
+
+/* The 12 control points of cell (r,c), in PDF ShadingType 6 order:
+   p00 -> p01 -> p11 -> p10 -> back to p00, corners at indices 0,3,6,9.
+   u runs along columns, v along rows. */
+function meshCellPatch(mesh, r, c) {
+  const top = _segCtrl(_rowPts(mesh, r), c);            // p00 -> p01
+  const bot = _segCtrl(_rowPts(mesh, r + 1), c);        // p10 -> p11
+  const left = _segCtrl(_colPts(mesh, c), r);           // p00 -> p10
+  const right = _segCtrl(_colPts(mesh, c + 1), r);      // p01 -> p11
+  const p00 = _gridPt(mesh, r, c), p01 = _gridPt(mesh, r, c + 1);
+  const p11 = _gridPt(mesh, r + 1, c + 1), p10 = _gridPt(mesh, r + 1, c);
+  return [
+    p00, top[0], top[1],
+    p01, right[0], right[1],
+    p11, bot[1], bot[0],       // reversed: p11 -> p10
+    p10, left[1], left[0],     // reversed: p10 -> p00
+  ];
+}
+
+function _bez(p0, p1, p2, p3, t) {
+  const m = 1 - t, a = m * m * m, b = 3 * m * m * t, cc = 3 * m * t * t, d = t * t * t;
+  return _P(a * p0.x + b * p1.x + cc * p2.x + d * p3.x,
+            a * p0.y + b * p1.y + cc * p2.y + d * p3.y);
+}
+
+/* Coons surface point of a 12-point patch at local (u,v). */
+function coonsPoint(P, u, v) {
+  const top = _bez(P[0], P[1], P[2], P[3], u);            // v = 0
+  const bottom = _bez(P[9], P[8], P[7], P[6], u);         // v = 1
+  const left = _bez(P[0], P[11], P[10], P[9], v);         // u = 0
+  const right = _bez(P[3], P[4], P[5], P[6], v);          // u = 1
+  const x = (1 - v) * top.x + v * bottom.x + (1 - u) * left.x + u * right.x
+    - ((1 - u) * (1 - v) * P[0].x + u * (1 - v) * P[3].x
+       + (1 - u) * v * P[9].x + u * v * P[6].x);
+  const y = (1 - v) * top.y + v * bottom.y + (1 - u) * left.y + u * right.y
+    - ((1 - u) * (1 - v) * P[0].y + u * (1 - v) * P[3].y
+       + (1 - u) * v * P[9].y + u * v * P[6].y);
+  return _P(x, y);
+}
+
+/* Exact cubic through 4 points sampled at t = 0, 1/3, 2/3, 1. */
+function _fitCubic(q0, q1, q2, q3) {
+  return [
+    _P((-5 * q0.x + 18 * q1.x - 9 * q2.x + 2 * q3.x) / 6,
+       (-5 * q0.y + 18 * q1.y - 9 * q2.y + 2 * q3.y) / 6),
+    _P((2 * q0.x - 9 * q1.x + 18 * q2.x - 5 * q3.x) / 6,
+       (2 * q0.y - 9 * q1.y + 18 * q2.y - 5 * q3.y) / 6),
+  ];
+}
+
+/* Flatten the whole mesh into Coons sub-patches.
+   `sub` subdivisions per cell per axis lets the bilinear colour model that
+   PDF mandates converge on our bicubic colour field. Geometry stays exact
+   at any subdivision because sub-patch edges are fitted to the surface. */
+function meshPatchList(mesh, sub) {
+  sub = Math.max(1, Math.min(6, sub | 0 || 1));
+  const R = mesh.rows, C = mesh.cols;
+  const out = [];
+  for (let r = 0; r < R - 1; r++) {
+    for (let c = 0; c < C - 1; c++) {
+      const cell = meshCellPatch(mesh, r, c);
+      const S = (u, v) => coonsPoint(cell, u, v);
+      for (let j = 0; j < sub; j++) {
+        for (let i = 0; i < sub; i++) {
+          const u0 = i / sub, u1 = (i + 1) / sub;
+          const v0 = j / sub, v1 = (j + 1) / sub;
+          const du = (u1 - u0) / 3, dv = (v1 - v0) / 3;
+          const A = S(u0, v0), B = S(u1, v0), D2 = S(u1, v1), E = S(u0, v1);
+          const ab = _fitCubic(A, S(u0 + du, v0), S(u0 + 2 * du, v0), B);
+          const bc = _fitCubic(B, S(u1, v0 + dv), S(u1, v0 + 2 * dv), D2);
+          const cd = _fitCubic(D2, S(u1 - du, v1), S(u1 - 2 * du, v1), E);
+          const da = _fitCubic(E, S(u0, v1 - dv), S(u0, v1 - 2 * dv), A);
+          /* global parametric position -> bicubic colour field */
+          const GU = u => (c + u) / (C - 1), GV = v => (r + v) / (R - 1);
+          out.push({
+            pts: [A, ab[0], ab[1], B, bc[0], bc[1], D2, cd[0], cd[1], E, da[0], da[1]],
+            colors: [
+              sampleMesh(mesh, GU(u0), GV(v0)), sampleMesh(mesh, GU(u1), GV(v0)),
+              sampleMesh(mesh, GU(u1), GV(v1)), sampleMesh(mesh, GU(u0), GV(v1)),
+            ],
+          });
+        }
+      }
+    }
+  }
+  return out;
+}
+
 /* ---------- SVG rendering ---------- */
 
-/* Build a <g> of small quads approximating the mesh, clipped to the shape.
-   TESS controls smoothness; 12 subdivisions per cell reads as continuous. */
+/* Tessellate the same Coons surface the PDF exporter uses. Each cell is
+   split into a grid of quads whose corners sit ON the surface, so dragged
+   nodes bend the fill exactly as they do in the exported file. */
 function buildMeshPaint(o, bb) {
   const mesh = meshOf(o);
   if (!mesh) return null;
   const g = svgEl("g", { "pointer-events": "none" });
-  const TESS = 10;
-  const steps = Math.max(2, Math.min(28, TESS * Math.max(mesh.rows, mesh.cols) / 2 | 0));
+  const R = mesh.rows, C = mesh.cols;
+  const steps = Math.max(3, Math.min(10, Math.round(24 / Math.max(R, C))));
   const w = bb.w || 1, h = bb.h || 1;
-  const px = (u, v) => ({ x: bb.x + u * w, y: bb.y + v * h });
+  const map = p => _P(bb.x + p.x * w, bb.y + p.y * h);
 
-  for (let i = 0; i < steps; i++) {
-    for (let j = 0; j < steps; j++) {
-      const u0 = i / steps, u1 = (i + 1) / steps;
-      const v0 = j / steps, v1 = (j + 1) / steps;
-      const a = px(u0, v0), b = px(u1, v0), c = px(u1, v1), d = px(u0, v1);
-      // sample at the cell centre; overlap by a hair to avoid seams
-      const col = sampleMesh(mesh, (u0 + u1) / 2, (v0 + v1) / 2);
-      const e = 0.6;
-      g.appendChild(svgEl("path", {
-        d: `M ${a.x - e} ${a.y - e} L ${b.x + e} ${b.y - e} L ${c.x + e} ${c.y + e} L ${d.x - e} ${d.y + e} Z`,
-        fill: col, stroke: col, "stroke-width": 0.5, "shape-rendering": "crispEdges"
-      }));
+  for (let r = 0; r < R - 1; r++) {
+    for (let c = 0; c < C - 1; c++) {
+      const cell = meshCellPatch(mesh, r, c);
+      for (let j = 0; j < steps; j++) {
+        for (let i = 0; i < steps; i++) {
+          const u0 = i / steps, u1 = (i + 1) / steps;
+          const v0 = j / steps, v1 = (j + 1) / steps;
+          const a = map(coonsPoint(cell, u0, v0));
+          const b = map(coonsPoint(cell, u1, v0));
+          const d = map(coonsPoint(cell, u1, v1));
+          const e = map(coonsPoint(cell, u0, v1));
+          const col = sampleMesh(mesh,
+            (c + (u0 + u1) / 2) / (C - 1), (r + (v0 + v1) / 2) / (R - 1));
+          g.appendChild(svgEl("path", {
+            d: `M ${a.x} ${a.y} L ${b.x} ${b.y} L ${d.x} ${d.y} L ${e.x} ${e.y} Z`,
+            fill: col, stroke: col, "stroke-width": 0.75,
+            "stroke-linejoin": "round"
+          }));
+        }
+      }
     }
   }
   return g;
@@ -359,5 +490,6 @@ function ensureAlphaMask(o) {
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
     makeMesh, seedMeshColors, sampleMesh, meshOf, alphaStops,
+    meshCellPatch, coonsPoint, meshPatchList,
   };
 }

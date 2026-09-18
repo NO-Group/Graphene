@@ -2,7 +2,7 @@
    Cross-checked against Node's zlib, which is an independent implementation. */
 const zlib = require("zlib");
 const path = require("path");
-const { inflateRaw, zlibInflate, decodePNG, pngInfo, zlibStore, adler32 } =
+const { inflateRaw, zlibInflate, decodePNG, pngInfo, zlibStore, zlibDeflate, deflateRaw, adler32 } =
   require(path.join(__dirname, "..", "js", "png.js"));
 
 let pass = 0, fail = 0;
@@ -85,6 +85,61 @@ for (const len of [0, 1, 1000, 65535, 65536, 150000]) {
 }
 t("adler32('abc') = 0x024d0127", adler32(new Uint8Array([97, 98, 99])) === 0x024d0127,
   adler32(new Uint8Array([97, 98, 99])).toString(16));
+
+console.log("\n— DEFLATE compressor (verified by node's zlib) —");
+{
+  const corpus = {
+    empty: Buffer.alloc(0),
+    one: Buffer.from("A"),
+    short: Buffer.from("hello"),
+    repeat: Buffer.from("abcabcabcabc"),
+    text: Buffer.from("the quick brown fox jumps over the lazy dog. ".repeat(60)),
+    zeros: Buffer.alloc(100000),
+    ramp: Buffer.from(Array.from({ length: 60000 }, (_, i) => i % 251)),
+    runs: Buffer.from("aaaaaaaaaa".repeat(5000)),
+    farMatches: Buffer.from("xy".repeat(40000)),
+    maxMatch: Buffer.concat([Buffer.alloc(300, 90), Buffer.from("Q"), Buffer.alloc(300, 90)]),
+    allDistinct: Buffer.from(Array.from({ length: 256 }, (_, i) => i)),
+    incompressible: require("crypto").randomBytes(30000),
+  };
+  /* smooth gradient: no LZ77 matches at all, only entropy coding helps */
+  const img = Buffer.alloc(120 * 120 * 3);
+  for (let y = 0; y < 120; y++) for (let x = 0; x < 120; x++) {
+    const o = (y * 120 + x) * 3; img[o] = x * 2; img[o + 1] = y * 2; img[o + 2] = 128;
+  }
+  corpus.gradientImage = img;
+
+  for (const [name, src] of Object.entries(corpus)) {
+    const z = Buffer.from(zlibDeflate(new Uint8Array(src)));
+    let ok = false, note = "";
+    try { ok = zlib.inflateSync(z).equals(src); } catch (e) { note = e.message; }
+    t(`node zlib decodes our "${name}"`, ok, note);
+    let selfOk = false;
+    try { selfOk = Buffer.from(zlibInflate(new Uint8Array(z))).equals(src); } catch (e) { note = e.message; }
+    t(`  our inflater round-trips "${name}"`, selfOk, note);
+    if (src.length > 0) {
+      t(`  "${name}" never inflates the payload`, z.length <= src.length + 64,
+        `${z.length} vs ${src.length}`);
+    }
+  }
+
+  /* compression must be competitive, not merely correct */
+  const ratio = (buf) => Buffer.from(zlibDeflate(new Uint8Array(buf))).length / zlib.deflateSync(buf).length;
+  t("text within 20% of zlib", ratio(corpus.text) < 1.2, ratio(corpus.text).toFixed(2));
+  t("zeros within 20% of zlib", ratio(corpus.zeros) < 1.2, ratio(corpus.zeros).toFixed(2));
+  t("gradient image within 25% of zlib", ratio(img) < 1.25, ratio(img).toFixed(2));
+  t("gradient image actually shrinks",
+    Buffer.from(zlibDeflate(new Uint8Array(img))).length < img.length * 0.95);
+  /* BTYPE lives in bits 1-2 of the first byte: 01 = fixed, 10 = dynamic */
+  const btype = buf => (Buffer.from(deflateRaw(new Uint8Array(buf)))[0] >> 1) & 3;
+  t("entropy-heavy data selects dynamic Huffman", btype(img) === 2, "BTYPE " + btype(img));
+  t("tiny data selects fixed Huffman", btype(Buffer.from("hi")) === 1, "BTYPE " + btype(Buffer.from("hi")));
+
+  /* raw deflate (no zlib header) must also be valid */
+  const rawOut = Buffer.from(deflateRaw(new Uint8Array(corpus.text)));
+  t("deflateRaw decodes via inflateRawSync",
+    zlib.inflateRawSync(rawOut).equals(corpus.text));
+}
 
 console.log("\n— PNG colour types —");
 let rows = [];
@@ -181,6 +236,73 @@ t("truncated data throws (not hangs)", (() => {
   const good = makePNG({ w: 4, h: 4, depth: 8, colorType: 2, raw: new Array(4 * 13).fill(0) });
   try { decodePNG(good.slice(0, good.length - 30)); return false; } catch (e) { return true; }
 })());
+
+
+/* ---- Huffman code-length validity (RFC 1951 3.2.2) ----------------------
+ * A DEFLATE decoder rejects a code set that is over-subscribed OR incomplete.
+ * Both bugs shipped once here: a single-symbol alphabet produced kraft 64/128,
+ * and clamping deep codes to maxBits left the tree under-subscribed, which made
+ * zlib fail with "invalid code lengths set" on a 160x120 image embedded in a PDF. */
+const { _buildLengths } = require(path.join(__dirname, "..", "js", "png.js"));
+
+function kraftOf(lens, maxBits) {
+  let k = 0;
+  for (const l of lens) {
+    if (l > maxBits) return -1;                 // over-long code
+    if (l) k += 2 ** (maxBits - l);
+  }
+  return k;
+}
+const freqOf = (n, fn) => { const f = new Array(n).fill(0); for (let i = 0; i < n; i++) f[i] = fn(i); return f; };
+
+{
+  const one = new Array(19).fill(0); one[5] = 100;
+  const k = kraftOf(_buildLengths(one, 7), 7);
+  t("single-symbol alphabet fills the code space", k === 128, k);
+}
+{
+  const k = kraftOf(_buildLengths(freqOf(19, i => Math.max(1, Math.round(2 ** (18 - i)))), 7), 7);
+  t("skewed alphabet stays complete after capping", k === 128, k);
+}
+{
+  const k = kraftOf(_buildLengths(freqOf(286, () => 1), 15), 15);
+  t("uniform 286-symbol alphabet is exact", k === 32768, k);
+}
+{
+  let a = 1, b = 1;
+  const fib = freqOf(286, () => { const v = a; [a, b] = [b, Math.min(a + b, 2 ** 40)]; return v; });
+  const k = kraftOf(_buildLengths(fib, 15), 15);
+  t("deepest (fibonacci) tree is exact", k === 32768, k);
+}
+{
+  let bad = 0;
+  for (let i = 0; i < 120; i++) {
+    const f = new Array(286).fill(0);
+    const n = 2 + Math.floor(Math.random() * 284);
+    for (let j = 0; j < n; j++) f[Math.floor(Math.random() * 286)] += Math.floor(Math.random() * 1e6) + 1;
+    if (kraftOf(_buildLengths(f, 15), 15) !== 32768) bad++;
+  }
+  t("120 random alphabets all produce valid trees", bad === 0, bad + " invalid");
+}
+
+/* the exact payload that shipped corrupt: a real zlib must accept it */
+{
+  const W = 160, H = 120, px = new Uint8Array(W * H * 3);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const o = (y * W + x) * 3;
+    px[o] = (x * 255 / W) | 0; px[o + 1] = (y * 255 / H) | 0; px[o + 2] = (x + y) % 255;
+  }
+  let ok = false, why = "";
+  try { ok = Buffer.from(zlib.inflateSync(Buffer.from(zlibDeflate(px)))).equals(Buffer.from(px)); }
+  catch (e) { why = e.message; }
+  t("160x120 gradient image survives real zlib", ok, why);
+
+  const flat = new Uint8Array(40000).fill(99);
+  let ok2 = false, why2 = "";
+  try { ok2 = Buffer.from(zlib.inflateSync(Buffer.from(zlibDeflate(flat)))).equals(Buffer.from(flat)); }
+  catch (e) { why2 = e.message; }
+  t("single-symbol image survives real zlib", ok2, why2);
+}
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

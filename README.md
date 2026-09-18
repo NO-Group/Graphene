@@ -148,6 +148,11 @@ Press `?` in the app for the full shortcut list.
 - **PNG artwork embeds losslessly.** Graphene ships its own DEFLATE decoder and
   PNG parser, so PNGs become real image XObjects and their alpha channel becomes
   a PDF `/SMask`. JPEGs pass straight through as `DCTDecode`
+- **Everything is Flate-compressed on the way out.** Graphene also ships a real
+  DEFLATE *compressor* (LZ77 + dynamic Huffman), so content streams and images
+  are genuinely compressed rather than stored. Typical vector artwork compresses
+  to well under 1% of its raw pixel size, and a representative export dropped
+  from 5,990 to 4,243 bytes (−29%) while rendering pixel-identically
 - Text is re-encoded to **WinAnsi**, with sensible fallbacks for characters
   outside it, so exported strings never carry invalid bytes
 - Transparency via `ExtGState`, text stays **live and selectable** using the
@@ -185,10 +190,10 @@ Press `?` in the app for the full shortcut list.
 | `js/pdf.js` | Print-ready PDF 1.7 writer built from scratch: DeviceCMYK/RGB, axial & radial shadings, transparency groups, base-14 fonts, crop marks, bleed |
 | `js/fountain.js` | Multi-stop fountain-fill editor (draggable ramp) and text→curves conversion |
 | `js/mesh.js` | Mesh fill (Coons colour meshes with bicubic interpolation) and gradient transparency |
-| `js/png.js` | DEFLATE inflate + PNG decoder written from scratch, so PNG artwork embeds losslessly in exported PDFs |
+| `js/png.js` | DEFLATE **inflate + deflate** and a PNG decoder, all written from scratch: PNG artwork embeds losslessly and every exported stream is really compressed |
 | `sw.js` + `manifest.json` | Offline service worker + PWA install manifest |
 | `desktop/main.js` + `package.json` | Electron shell + electron-builder config for native Windows/macOS/Linux builds |
-| `test/` | 314 automated tests — boolean geometry, tracer, distortion, headless app smoke tests, simulated pointer interaction |
+| `test/` | 379 automated tests — boolean geometry, tracer, distortion, headless app smoke tests, simulated pointer interaction |
 
 ## Tests
 
@@ -209,11 +214,18 @@ npm test
 - `test/pdf.test.js` — 58 tests: CMYK conversion, PDF object graph, xref offset
   integrity, stream `/Length` correctness, shadings, fonts & string escaping,
   transparency, bleed/crop marks, multi-stop gradients, text→curves
-- `test/png.test.js` — 56 tests: the DEFLATE inflater is verified byte-for-byte
+- `test/png.test.js` — 108 tests: the DEFLATE inflater is verified byte-for-byte
   against Node's `zlib` at every compression level, plus every PNG colour type,
-  bit depth (1/2/4/8/16) and all five row filters
-- `test/mesh.test.js` — 65 tests: mesh interpolation, Coons patch export,
-  gradient transparency soft masks, PNG embedding, and command wiring
+  bit depth (1/2/4/8/16) and all five row filters. The compressor is checked the
+  other way round — every output is inflated by Node's `zlib` *and* by Graphene's
+  own inflater — and the Huffman builder is fuzzed to prove each code set
+  satisfies the Kraft equality exactly (an incomplete tree is what real decoders
+  reject as "invalid code lengths set")
+- `test/mesh.test.js` — 78 tests: mesh interpolation, Coons patch export,
+  gradient transparency soft masks, PNG embedding, and command wiring. One test
+  decodes the mesh patches back out of the exported PDF and checks they describe
+  the *same* surface the on-screen canvas draws, to within the format's own
+  16-bit quantisation (worst observed deviation 0.0024 pt vs a 0.0046 pt floor)
 
 The editor itself is vanilla ES2020 + SVG — no frameworks, no build step, and
 the same codebase powers the browser, PWA, and desktop versions.

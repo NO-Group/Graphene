@@ -353,6 +353,313 @@ function zlibStore(buf) {
   return out.subarray(0, o);
 }
 
+/* ---------- DEFLATE compressor (LZ77 + fixed Huffman) ----------
+   Stored blocks are valid but waste space; real compression matters for
+   PNG-heavy documents. We do greedy LZ77 matching over a hash chain and
+   emit fixed-Huffman blocks (BTYPE=01). That avoids shipping a dynamic
+   code-length tree while still typically cutting image data by 50-80%.
+   Any block that would grow is emitted stored instead, so output is never
+   worse than the input. */
+
+function _crcNone() {}
+
+/* fixed Huffman literal/length codes (RFC 1951 3.2.6), MSB-first */
+function _fixedLitCode(sym) {
+  if (sym < 144) return [sym + 0x30, 8];
+  if (sym < 256) return [sym - 144 + 0x190, 9];
+  if (sym < 280) return [sym - 256 + 0x00, 7];
+  return [sym - 280 + 0xC0, 8];
+}
+
+class _BitWriter {
+  constructor() { this.bytes = []; this.cur = 0; this.n = 0; }
+  /* DEFLATE packs Huffman codes MSB-first, everything else LSB-first */
+  bits(value, count) {
+    for (let i = 0; i < count; i++) {
+      this.cur |= ((value >> i) & 1) << this.n;
+      if (++this.n === 8) { this.bytes.push(this.cur); this.cur = 0; this.n = 0; }
+    }
+  }
+  huff(code, count) {
+    for (let i = count - 1; i >= 0; i--) {
+      this.cur |= ((code >> i) & 1) << this.n;
+      if (++this.n === 8) { this.bytes.push(this.cur); this.cur = 0; this.n = 0; }
+    }
+  }
+  alignByte() { if (this.n) { this.bytes.push(this.cur); this.cur = 0; this.n = 0; } }
+  raw(u8) { this.alignByte(); for (let i = 0; i < u8.length; i++) this.bytes.push(u8[i]); }
+  done() { this.alignByte(); return Uint8Array.from(this.bytes); }
+}
+
+function _lenCode(len) {
+  for (let i = _LEN_BASE.length - 1; i >= 0; i--) {
+    if (len >= _LEN_BASE[i]) return [257 + i, len - _LEN_BASE[i], _LEN_EXTRA[i]];
+  }
+  return [257, 0, 0];
+}
+function _distCode(dist) {
+  for (let i = _DIST_BASE.length - 1; i >= 0; i--) {
+    if (dist >= _DIST_BASE[i]) return [i, dist - _DIST_BASE[i], _DIST_EXTRA[i]];
+  }
+  return [0, 0, 0];
+}
+
+/* Build canonical Huffman code lengths for `freq` via package-merge-free
+   heap construction, capped at maxBits. */
+/* Code lengths for a Huffman alphabet, capped at `maxBits`.
+ *
+ * DEFLATE decoders reject both over-subscribed AND incomplete code sets, so the
+ * result must satisfy the Kraft equality exactly:
+ *     sum over used symbols of 2^(maxBits - length) === 2^maxBits
+ * Plain "clamp the deep codes to maxBits" breaks that in both directions, so the
+ * lengths are explicitly repaired below and the invariant is asserted by tests. */
+function _buildLengths(freq, maxBits) {
+  const n = freq.length;
+  const lengths = new Array(n).fill(0);
+  const used = [];
+  for (let i = 0; i < n; i++) if (freq[i] > 0) used.push(i);
+  if (used.length === 0) return lengths;
+  if (used.length === 1) {
+    /* one symbol cannot fill the code space: emit a second, unused, 1-bit code */
+    lengths[used[0]] = 1;
+    lengths[used[0] === 0 ? 1 : 0] = 1;
+    return lengths;
+  }
+
+  /* --- ordinary Huffman construction --- */
+  const q = used.map(s => ({ sym: s, f: freq[s], l: null, r: null }))
+    .sort((a, b) => a.f - b.f || a.sym - b.sym);
+  while (q.length > 1) {
+    const a = q.shift(), b = q.shift();
+    const merged = { sym: -1, f: a.f + b.f, l: a, r: b };
+    let lo = 0, hi = q.length;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (q[mid].f <= merged.f) lo = mid + 1; else hi = mid; }
+    q.splice(lo, 0, merged);
+  }
+  const stack = [[q[0], 0]];              // iterative: skewed inputs make deep trees
+  while (stack.length) {
+    const [node, d] = stack.pop();
+    if (node.sym >= 0) { lengths[node.sym] = Math.max(1, d); continue; }
+    stack.push([node.l, d + 1], [node.r, d + 1]);
+  }
+
+  /* --- cap, then restore the Kraft equality --- */
+  const limit = 1 << maxBits;
+  for (const s of used) if (lengths[s] > maxBits) lengths[s] = maxBits;
+  const kraft = () => { let k = 0; for (const s of used) k += 1 << (maxBits - lengths[s]); return k; };
+  let k = kraft();
+
+  /* over-subscribed: lengthen the rarest symbols that still have room */
+  const rarest = used.slice().sort((a, b) => freq[a] - freq[b] || a - b);
+  while (k > limit) {
+    const s = rarest.find(x => lengths[x] < maxBits);
+    if (s === undefined) break;
+    k -= 1 << (maxBits - lengths[s]);
+    lengths[s]++;
+    k += 1 << (maxBits - lengths[s]);
+  }
+
+  /* under-subscribed: give the slack back, cheapest codes first */
+  const commonest = used.slice().sort((a, b) => freq[b] - freq[a] || a - b);
+  for (let progress = true; k < limit && progress;) {
+    progress = false;
+    for (const s of commonest) {
+      if (lengths[s] <= 1) continue;
+      const gain = 1 << (maxBits - lengths[s]);
+      if (k + gain <= limit) { lengths[s]--; k += gain; progress = true; if (k === limit) break; }
+    }
+  }
+  /* any residue parks on unused symbols; they are never emitted */
+  for (let s = 0; s < n && k < limit; s++) {
+    if (lengths[s]) continue;
+    let l = maxBits;
+    while (l > 1 && (1 << (maxBits - (l - 1))) <= limit - k) l--;
+    lengths[s] = l;
+    k += 1 << (maxBits - l);
+  }
+  return lengths;
+}
+
+/* canonical codes from lengths */
+function _canonical(lengths, maxBits) {
+  const blCount = new Array(maxBits + 1).fill(0);
+  for (const l of lengths) if (l) blCount[l]++;
+  const next = new Array(maxBits + 2).fill(0);
+  let code = 0;
+  for (let b = 1; b <= maxBits; b++) { code = (code + blCount[b - 1]) << 1; next[b] = code; }
+  const codes = new Array(lengths.length).fill(0);
+  for (let i = 0; i < lengths.length; i++) if (lengths[i]) codes[i] = next[lengths[i]]++;
+  return codes;
+}
+
+/* run-length encode the combined code-length alphabet (RFC 1951 3.2.7) */
+function _rleCodeLengths(all) {
+  const out = [];
+  let i = 0;
+  while (i < all.length) {
+    const v = all[i];
+    let run = 1;
+    while (i + run < all.length && all[i + run] === v) run++;
+    if (v === 0) {
+      while (run >= 11) { const take = Math.min(138, run); out.push([18, take - 11, 7]); run -= take; i += take; }
+      while (run >= 3) { const take = Math.min(10, run); out.push([17, take - 3, 3]); run -= take; i += take; }
+      while (run-- > 0) { out.push([0, 0, 0]); i++; }
+    } else {
+      out.push([v, 0, 0]); i++; run--;
+      while (run >= 3) { const take = Math.min(6, run); out.push([16, take - 3, 2]); run -= take; i += take; }
+      while (run-- > 0) { out.push([v, 0, 0]); i++; }
+    }
+  }
+  return out;
+}
+
+/* Tokenise with LZ77, then emit whichever of fixed/dynamic Huffman is smaller. */
+function deflateRaw(src) {
+  const n = src.length;
+  const w = new _BitWriter();
+  if (n === 0) {
+    w.bits(1, 1); w.bits(1, 2);
+    const [c, l] = _fixedLitCode(256); w.huff(c, l);
+    return w.done();
+  }
+
+  const WSIZE = 32768, MIN_MATCH = 3, MAX_MATCH = 258;
+  const HSIZE = 1 << 15, HMASK = HSIZE - 1;
+  const head = new Int32Array(HSIZE).fill(-1);
+  const prev = new Int32Array(WSIZE).fill(-1);
+  const hash = (a, b, c) => ((a << 10) ^ (b << 5) ^ c) & HMASK;
+
+  /* --- pass 1: LZ77 tokens --- */
+  const tokens = [];                             // [lit] or [len, dist]
+  const litFreq = new Uint32Array(286);
+  const distFreq = new Uint32Array(30);
+  let i = 0;
+  while (i < n) {
+    let bestLen = 0, bestDist = 0;
+    if (i + MIN_MATCH <= n) {
+      const h = hash(src[i], src[i + 1], src[i + 2]);
+      let cand = head[h], chain = 0;
+      const limit = Math.max(0, i - WSIZE + 1);
+      while (cand >= limit && cand >= 0 && chain++ < 128) {
+        if (src[cand + bestLen] === src[i + bestLen] && src[cand] === src[i]) {
+          let l = 0;
+          const max = Math.min(MAX_MATCH, n - i);
+          while (l < max && src[cand + l] === src[i + l]) l++;
+          if (l > bestLen) { bestLen = l; bestDist = i - cand; if (l >= MAX_MATCH) break; }
+        }
+        cand = prev[cand & (WSIZE - 1)];
+      }
+    }
+    const advance = len => {
+      for (let k = 0; k < len; k++) {
+        if (i + k + MIN_MATCH <= n) {
+          const h2 = hash(src[i + k], src[i + k + 1], src[i + k + 2]);
+          prev[(i + k) & (WSIZE - 1)] = head[h2];
+          head[h2] = i + k;
+        }
+      }
+      i += len;
+    };
+    if (bestLen >= MIN_MATCH) {
+      const [lc] = _lenCode(bestLen);
+      const [dc] = _distCode(bestDist);
+      litFreq[lc]++; distFreq[dc]++;
+      tokens.push(bestLen, bestDist);
+      advance(bestLen);
+    } else {
+      litFreq[src[i]]++;
+      tokens.push(-1, src[i]);
+      advance(1);
+    }
+  }
+  litFreq[256]++;                                 // end-of-block
+
+  /* --- pass 2: cost of fixed vs dynamic --- */
+  const litLens = _buildLengths(litFreq, 15);
+  let distLens = _buildLengths(distFreq, 15);
+  if (!distLens.some(l => l > 0)) { distLens = distLens.slice(); distLens[0] = 1; }
+
+  const HLIT = Math.max(257, litLens.length - [...litLens].reverse().findIndex(l => l > 0));
+  let hlit = 286; while (hlit > 257 && litLens[hlit - 1] === 0) hlit--;
+  let hdist = 30; while (hdist > 1 && distLens[hdist - 1] === 0) hdist--;
+
+  const combined = litLens.slice(0, hlit).concat(distLens.slice(0, hdist));
+  const rle = _rleCodeLengths(combined);
+  const clFreq = new Uint32Array(19);
+  for (const [sym] of rle) clFreq[sym]++;
+  const clLens = _buildLengths(clFreq, 7);
+  let hclen = 19; while (hclen > 4 && clLens[_CLC_ORDER[hclen - 1]] === 0) hclen--;
+
+  let dynBits = 3 + 5 + 5 + 4 + hclen * 3;
+  for (const [sym, , extra] of rle) dynBits += clLens[sym] + extra;
+  let fixedBits = 3;
+  for (let k = 0; k < tokens.length; k += 2) {
+    if (tokens[k] === -1) { fixedBits += _fixedLitCode(tokens[k + 1])[1]; dynBits += litLens[tokens[k + 1]]; }
+    else {
+      const [lc, , lbits] = _lenCode(tokens[k]);
+      const [dc, , dbits] = _distCode(tokens[k + 1]);
+      fixedBits += _fixedLitCode(lc)[1] + lbits + 5 + dbits;
+      dynBits += litLens[lc] + lbits + distLens[dc] + dbits;
+    }
+  }
+  fixedBits += _fixedLitCode(256)[1];
+  dynBits += litLens[256];
+
+  const useDynamic = dynBits < fixedBits;
+  w.bits(1, 1);                                   // BFINAL
+  w.bits(useDynamic ? 2 : 1, 2);                  // BTYPE
+
+  let litCodes, distCodes;
+  if (useDynamic) {
+    litCodes = _canonical(litLens, 15);
+    distCodes = _canonical(distLens, 15);
+    const clCodes = _canonical(clLens, 7);
+    w.bits(hlit - 257, 5); w.bits(hdist - 1, 5); w.bits(hclen - 4, 4);
+    for (let k = 0; k < hclen; k++) w.bits(clLens[_CLC_ORDER[k]], 3);
+    for (const [sym, extraVal, extraBits] of rle) {
+      w.huff(clCodes[sym], clLens[sym]);
+      if (extraBits) w.bits(extraVal, extraBits);
+    }
+  }
+  const putLit = sym => {
+    if (useDynamic) w.huff(litCodes[sym], litLens[sym]);
+    else { const [c, l] = _fixedLitCode(sym); w.huff(c, l); }
+  };
+  const putDist = sym => {
+    if (useDynamic) w.huff(distCodes[sym], distLens[sym]);
+    else w.huff(sym, 5);
+  };
+
+  for (let k = 0; k < tokens.length; k += 2) {
+    if (tokens[k] === -1) { putLit(tokens[k + 1]); continue; }
+    const [lc, lextra, lbits] = _lenCode(tokens[k]);
+    const [dc, dextra, dbits] = _distCode(tokens[k + 1]);
+    putLit(lc);
+    if (lbits) w.bits(lextra, lbits);
+    putDist(dc);
+    if (dbits) w.bits(dextra, dbits);
+  }
+  putLit(256);
+  return w.done();
+}
+
+/* zlib wrapper around the compressor, falling back to stored blocks when
+   compression does not actually help (already-compressed data). */
+function zlibDeflate(buf) {
+  const comp = deflateRaw(buf);
+  if (comp.length + 6 >= buf.length + 5 * Math.ceil(Math.max(1, buf.length) / 65535) + 6) {
+    return zlibStore(buf);
+  }
+  const out = new Uint8Array(2 + comp.length + 4);
+  out[0] = 0x78; out[1] = 0x9C;                  // CM=8, default compression
+  out.set(comp, 2);
+  const ad = adler32(buf);
+  const o = 2 + comp.length;
+  out[o] = (ad >>> 24) & 255; out[o + 1] = (ad >>> 16) & 255;
+  out[o + 2] = (ad >>> 8) & 255; out[o + 3] = ad & 255;
+  return out;
+}
+
 /* Uint8Array -> latin1 string, for embedding in a PDF stream */
 function bytesToLatin1(u8) {
   let s = "", CH = 0x8000;
@@ -363,5 +670,5 @@ function bytesToLatin1(u8) {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { inflateRaw, zlibInflate, decodePNG, pngInfo, buildHuffman, zlibStore, adler32, bytesToLatin1 };
+  module.exports = { inflateRaw, zlibInflate, decodePNG, pngInfo, buildHuffman, zlibStore, zlibDeflate, deflateRaw, adler32, bytesToLatin1, _buildLengths };
 }

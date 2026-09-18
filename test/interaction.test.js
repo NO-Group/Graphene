@@ -2,8 +2,20 @@
 const fs=require("fs"), path=require("path");
 let JSDOM;
 try { JSDOM = require("jsdom").JSDOM; }
-catch (e) { try { JSDOM = require("/tmp/node_modules/jsdom").JSDOM; }
-  catch (e2) { console.log("SKIP: jsdom not installed (npm i -D jsdom)"); process.exit(0); } }
+catch (e) {
+  try { JSDOM = require("/tmp/node_modules/jsdom").JSDOM; }
+  catch (e2) {
+    /* Skipping silently would let a broken environment masquerade as a pass.
+       Opt in explicitly with GRAPHENE_SKIP_DOM=1 if jsdom is unavailable. */
+    if (process.env.GRAPHENE_SKIP_DOM === "1") {
+      console.log("SKIP: jsdom unavailable (GRAPHENE_SKIP_DOM=1)");
+      process.exit(0);
+    }
+    console.error("FATAL: jsdom is required for this suite. Run `npm install`,");
+    console.error("or set GRAPHENE_SKIP_DOM=1 to deliberately skip DOM tests.");
+    process.exit(1);
+  }
+}
 const ROOT=path.join(__dirname,"..");
 const dom=new JSDOM(fs.readFileSync(path.join(ROOT,"index.html"),"utf8"),{
   url:"http://localhost:8000/", runScripts:"dangerously", pretendToBeVisual:true,
@@ -13,6 +25,21 @@ const dom=new JSDOM(fs.readFileSync(path.join(ROOT,"index.html"),"utf8"),{
       clearRect(){},fillRect(){},beginPath(){},moveTo(){},lineTo(){},stroke(){},fill(){},save(){},restore(){},scale(){},translate(){},
       setTransform(){},fillText(){},measureText:()=>({width:10}),drawImage(){}};};
     win.requestAnimationFrame=cb=>setTimeout(()=>cb(Date.now()),0);
+    /* Older jsdom builds ship no PointerEvent. Derive one from MouseEvent so
+       these tests run on any supported jsdom version. */
+    if (typeof win.PointerEvent !== "function") {
+      win.PointerEvent = class PointerEvent extends win.MouseEvent {
+        constructor(type, init = {}) {
+          super(type, init);
+          this.pointerId = init.pointerId != null ? init.pointerId : 1;
+          this.pointerType = init.pointerType || "mouse";
+          this.isPrimary = init.isPrimary != null ? init.isPrimary : true;
+          this.pressure = init.pressure != null ? init.pressure : 0.5;
+          this.width = init.width || 1;
+          this.height = init.height || 1;
+        }
+      };
+    }
   }});
 const win=dom.window;
 const errs=[]; win.addEventListener("error",e=>errs.push(String(e.error||e.message)));

@@ -8,7 +8,17 @@ let JSDOM;
 try { JSDOM = require("jsdom").JSDOM; }
 catch (e) {
   try { JSDOM = require("/tmp/node_modules/jsdom").JSDOM; }
-  catch (e2) { console.log("SKIP: jsdom not installed (npm i -D jsdom)"); process.exit(0); }
+  catch (e2) {
+    /* Skipping silently would let a broken environment masquerade as a pass.
+       Opt in explicitly with GRAPHENE_SKIP_DOM=1 if jsdom is unavailable. */
+    if (process.env.GRAPHENE_SKIP_DOM === "1") {
+      console.log("SKIP: jsdom unavailable (GRAPHENE_SKIP_DOM=1)");
+      process.exit(0);
+    }
+    console.error("FATAL: jsdom is required for this suite. Run `npm install`,");
+    console.error("or set GRAPHENE_SKIP_DOM=1 to deliberately skip DOM tests.");
+    process.exit(1);
+  }
 }
 
 const dom = new JSDOM(fs.readFileSync(path.join(ROOT, "index.html"), "utf8"), {
@@ -48,6 +58,25 @@ bridge.textContent = `
    "decodePNG","zlibStore"
   ].forEach(n => { try { window[n] = eval(n); } catch (e) {} });`;
 win.document.body.appendChild(bridge);
+
+/* Streams may be FlateDecode-compressed. Expand them so assertions test the
+   real operators instead of accidentally passing on compressed noise. */
+function pdfExpand(src) {
+  const { zlibInflate } = require(path.join(ROOT, "js", "png.js"));
+  return src.replace(/<<([^>]*?)\/Filter \/FlateDecode([^>]*?)\/Length (\d+) >>\nstream\n([\s\S]*?)\nendstream/g,
+    (m, d1, d2, len, body) => {
+      try {
+        const u8 = new Uint8Array(body.length);
+        for (let i = 0; i < body.length; i++) u8[i] = body.charCodeAt(i) & 255;
+        const out = zlibInflate(u8);
+        let txt = "";
+        for (let i = 0; i < out.length; i += 0x8000) {
+          txt += String.fromCharCode.apply(null, out.subarray(i, i + 0x8000));
+        }
+        return `<<${d1}${d2}/Length ${txt.length} >>\nstream\n${txt}\nendstream`;
+      } catch (e) { return m; }
+    });
+}
 
 const A = win.App;
 let pass = 0, fail = 0;
@@ -99,6 +128,74 @@ t("seedMeshColors fills every node", (() => {
   return s.nodes.every(r => r.every(n => /^#[0-9a-f]{6}$/i.test(n.c)));
 })());
 
+console.log("\n— Coons patch geometry (canvas and PDF share this) —");
+{
+  const { meshCellPatch, coonsPoint, meshPatchList } = require(path.join(ROOT, "js", "mesh.js"));
+
+  /* an undragged grid must map to itself exactly, or flat art would bulge */
+  let worst = 0;
+  for (const [R, C] of [[2, 2], [3, 3], [4, 5], [8, 6]]) {
+    const g = win.makeMesh(R, C);
+    for (let r = 0; r < R - 1; r++) for (let c = 0; c < C - 1; c++) {
+      const P = meshCellPatch(g, r, c);
+      for (let i = 0; i <= 4; i++) for (let j = 0; j <= 4; j++) {
+        const u = i / 4, v = j / 4, p = coonsPoint(P, u, v);
+        worst = Math.max(worst, Math.abs(p.x - (c + u) / (C - 1)), Math.abs(p.y - (r + v) / (R - 1)));
+      }
+    }
+  }
+  t("uniform grid is the exact identity map", worst < 1e-12, "worst " + worst);
+
+  /* dragged nodes must be honoured exactly at patch corners */
+  const dm = win.makeMesh(4, 4);
+  dm.nodes[1][1].u = 0.15; dm.nodes[1][1].v = 0.42;
+  dm.nodes[2][2].u = 0.91; dm.nodes[2][2].v = 0.55;
+  dm.nodes[0][2].v = -0.2;
+  let cornerErr = 0;
+  for (let r = 0; r < 3; r++) for (let c = 0; c < 3; c++) {
+    const P = meshCellPatch(dm, r, c);
+    const pairs = [[P[0], dm.nodes[r][c]], [P[3], dm.nodes[r][c + 1]],
+                   [P[6], dm.nodes[r + 1][c + 1]], [P[9], dm.nodes[r + 1][c]]];
+    for (const [p, n] of pairs) cornerErr = Math.max(cornerErr, Math.abs(p.x - n.u), Math.abs(p.y - n.v));
+  }
+  t("patch corners honour dragged nodes", cornerErr < 1e-12, "err " + cornerErr);
+
+  /* neighbouring cells must share edge control points or seams crack open */
+  let seam = 0;
+  for (let r = 0; r < 3; r++) for (let c = 0; c < 2; c++) {
+    const L = meshCellPatch(dm, r, c), Rt = meshCellPatch(dm, r, c + 1);
+    const a = [L[3], L[4], L[5], L[6]], b = [Rt[0], Rt[11], Rt[10], Rt[9]];
+    for (let k = 0; k < 4; k++) seam = Math.max(seam, Math.abs(a[k].x - b[k].x), Math.abs(a[k].y - b[k].y));
+  }
+  t("vertical seams share control points", seam < 1e-12, "err " + seam);
+  let seam2 = 0;
+  for (let r = 0; r < 2; r++) for (let c = 0; c < 3; c++) {
+    const T = meshCellPatch(dm, r, c), B = meshCellPatch(dm, r + 1, c);
+    const a = [T[9], T[8], T[7], T[6]], b = [B[0], B[1], B[2], B[3]];
+    for (let k = 0; k < 4; k++) seam2 = Math.max(seam2, Math.abs(a[k].x - b[k].x), Math.abs(a[k].y - b[k].y));
+  }
+  t("horizontal seams share control points", seam2 < 1e-12, "err " + seam2);
+
+  /* subdivision must not move the surface */
+  const sub = 3;
+  const list = meshPatchList(dm, sub);
+  t("subdivision count is cells x sub^2", list.length === 9 * sub * sub, list.length);
+  let subErr = 0;
+  for (let r = 0; r < 3; r++) for (let c = 0; c < 3; c++) {
+    const P = meshCellPatch(dm, r, c);
+    for (let j = 0; j < sub; j++) for (let i = 0; i < sub; i++) {
+      const patch = list[(r * 3 + c) * sub * sub + j * sub + i];
+      const exp = coonsPoint(P, i / sub, j / sub);
+      subErr = Math.max(subErr, Math.abs(patch.pts[0].x - exp.x), Math.abs(patch.pts[0].y - exp.y));
+    }
+  }
+  t("subdivided corners lie on the parent surface", subErr < 1e-12, "err " + subErr);
+  t("every sub-patch has 12 control points", list.every(p => p.pts.length === 12));
+  t("every sub-patch carries 4 colours", list.every(p => p.colors.length === 4));
+  t("no NaN anywhere in the patch list",
+    list.every(p => p.pts.every(q => isFinite(q.x) && isFinite(q.y))));
+}
+
 console.log("\n— applying a mesh fill —");
 A.objects = []; A.selection = []; A.pages = null;
 A.doc.w = 400; A.doc.h = 300;
@@ -137,7 +234,7 @@ t("setMeshNodeColor with no selection is safe", (() => {
 })());
 
 console.log("\n— mesh exports as a native PDF shading —");
-let pdf = win.buildPDF({ colorSpace: "cmyk" });
+let pdf = pdfExpand(win.buildPDF({ colorSpace: "cmyk" }));
 t("ShadingType 6 (Coons patch)", pdf.includes("/ShadingType 6"));
 t("declares BitsPerFlag", pdf.includes("/BitsPerFlag 8"));
 t("declares BitsPerCoordinate", pdf.includes("/BitsPerCoordinate 16"));
@@ -146,8 +243,52 @@ t("CMYK mesh has an 8-value Decode", /\/Decode \[[^\]]*0 1 0 1 0 1 0 1\]/.test(p
 t("pattern registered in resources", /\/Pattern << \/Sh\d+ \d+ 0 R/.test(pdf),
   (pdf.match(/\/Pattern << [^>]*>>/) || [])[0]);
 t("no 'undefined' leaked into the PDF", !pdf.includes("undefined"));
-const rgbMesh = win.buildPDF({ colorSpace: "rgb" });
+const rgbMesh = pdfExpand(win.buildPDF({ colorSpace: "rgb" }));
 t("RGB mesh has a 6-value Decode", /\/Decode \[[^\]]*0 1 0 1 0 1\]/.test(rgbMesh) && !/0 1 0 1 0 1 0 1\]/.test(rgbMesh));
+
+console.log("\n— canvas and PDF describe the SAME surface —");
+{
+  const { meshPatchList } = require(path.join(ROOT, "js", "mesh.js"));
+  A.objects = []; A.selection = [];
+  const obj = win.makeRect(60, 40, 200, 160);
+  const wm = win.seedMeshColors(win.makeMesh(3, 3));
+  wm.nodes[1][1].u = 0.18; wm.nodes[1][1].v = 0.22;
+  wm.nodes[0][1].v = -0.12; wm.nodes[2][1].v = 1.10;
+  wm.nodes[1][2].u = 1.15;
+  obj.fill = { type: "mesh", color: "#ff0000", mesh: wm };
+  A.objects.push(obj);
+
+  /* pdfExpand inflates FlateDecode streams so the raw sample bytes are readable */
+  const raw = pdfExpand(win.buildPDF({ colorSpace: "rgb" }));
+  const m = /\/ShadingType 6[^>]*?\/Decode \[([-\d.  ]+)\][^>]*?\/Length (\d+) >>\nstream\n([\s\S]*?)\nendstream/.exec(raw);
+  t("warped mesh emits a shading stream", !!m);
+  if (m) {
+    /* Decode is [xmin xmax ymin ymax  c0min c0max ...] — take only the first 4 */
+    const dec = m[1].trim().split(/\s+/).map(Number);
+    const [minX, maxX, minY, maxY] = dec.slice(0, 4);
+    const data = m[3];
+    const patches = meshPatchList(wm, 3);
+    const bb = { x: 60, y: 40, w: 200, h: 160 };
+    let p = 0, worst = 0, n = 0;
+    const rd = () => { const v = (data.charCodeAt(p) << 8) | data.charCodeAt(p + 1); p += 2; return v / 65535; };
+    for (const patch of patches) {
+      p++;                                        // flag byte
+      for (let k = 0; k < 12; k++) {
+        const gx = minX + rd() * (maxX - minX);
+        const gy = minY + rd() * (maxY - minY);
+        worst = Math.max(worst,
+          Math.abs(gx - (bb.x + patch.pts[k].x * bb.w)),
+          Math.abs(gy - (bb.y + patch.pts[k].y * bb.h)));
+        n++;
+      }
+      p += 12;                                    // 4 corners x RGB
+    }
+    const quantum = (maxX - minX) / 65535;
+    t("all control points compared", n === patches.length * 12, n);
+    t("PDF matches canvas to 16-bit precision", worst <= quantum * 2,
+      `worst ${worst.toFixed(5)} vs quantum ${quantum.toFixed(5)}`);
+  }
+}
 
 console.log("\n— gradient transparency —");
 A.objects = []; A.selection = [];
@@ -199,9 +340,21 @@ console.log("\n— PNG embeds in PDF as a real image —");
   ]);
   A.objects = []; A.selection = [];
   A.objects.push(win.makeImage(10, 10, 80, 80, "data:image/png;base64," + png.toString("base64")));
-  const p = win.buildPDF({ colorSpace: "rgb" });
+  const rawPdf = win.buildPDF({ colorSpace: "rgb" });
+  const p = pdfExpand(rawPdf);
   t("emits an image XObject", p.includes("/Subtype /Image"));
-  t("uses FlateDecode", p.includes("/Filter /FlateDecode"));
+  /* check the RAW bytes: pdfExpand strips the filter once it decompresses */
+  t("image data uses FlateDecode", rawPdf.includes("/Filter /FlateDecode"));
+  t("image stream really inflates", (() => {
+    const { zlibInflate } = require(path.join(ROOT, "js", "png.js"));
+    /* pick the DeviceRGB image, not the DeviceGray SMask */
+    const re = /\/Subtype \/Image[^>]*?\/ColorSpace \/DeviceRGB[^>]*?\/Length (\d+) >>\nstream\n([\s\S]*?)\nendstream/;
+    const m = re.exec(rawPdf);
+    if (!m) return false;
+    const u8 = new Uint8Array(m[2].length);
+    for (let i = 0; i < m[2].length; i++) u8[i] = m[2].charCodeAt(i) & 255;
+    try { return zlibInflate(u8).length === 4 * 4 * 3; } catch (e) { return false; }
+  })());
   t("records the true pixel size", p.includes("/Width 4") && p.includes("/Height 4"));
   t("alpha becomes an /SMask", p.includes("/SMask"));
   t("XObject listed in resources", /\/XObject << \/Im\d+ \d+ 0 R/.test(p));
@@ -209,7 +362,7 @@ console.log("\n— PNG embeds in PDF as a real image —");
 
   A.objects = [win.makeImage(0, 0, 10, 10, "data:image/png;base64,QUJD")];
   t("corrupt PNG degrades to a box (no throw)", (() => {
-    try { const q = win.buildPDF({}); return !q.includes("/Subtype /Image") && q.includes("re f"); }
+    try { const q = pdfExpand(win.buildPDF({})); return !q.includes("/Subtype /Image") && q.includes("re f"); }
     catch (e) { return false; }
   })());
 }
@@ -235,7 +388,7 @@ A.objects = []; A.selection = [];
   for (const row of mm.nodes) for (const n of row) n.c = "#ffffff";
   rr.fill = { type: "mesh", color: "#ffffff", mesh: mm };
   A.objects.push(rr);
-  const p = win.buildPDF({ colorSpace: "rgb" });
+  const p = pdfExpand(win.buildPDF({ colorSpace: "rgb" }));
   /* the mesh data stream is binary; white nodes must encode as 0xFF bytes,
      not 0x01 (the bug was dividing an already-normalised value by 255) */
   const mstream = /\/ShadingType 6[\s\S]*?stream\n([\s\S]*?)\nendstream/.exec(p);
@@ -248,12 +401,12 @@ console.log("\n— regression: text encoding —");
 A.objects = []; A.selection = [];
 {
   A.objects.push(win.makeText(10, 10, "arrow \u2192 dash \u2014 quote \u201cx\u201d"));
-  const p = win.buildPDF({});
+  const p = pdfExpand(win.buildPDF({}));
   t("arrow transliterates to ASCII", p.includes("->"), "missing ->");
   t("em dash maps to WinAnsi 0x97", p.includes("\x97"));
   t("curly quotes map to WinAnsi", p.includes("\x93") && p.includes("\x94"));
   A.objects = [win.makeText(0, 0, "unsupported \u4e2d\u6587")];
-  const q = win.buildPDF({});
+  const q = pdfExpand(win.buildPDF({}));
   t("unmappable chars degrade, never raw UTF-16", !/[\u0100-\uffff]/.test(q));
 }
 
@@ -265,7 +418,7 @@ A.objects = []; A.selection = [];
               stops: [{ p: 0, c: "#7C5CFF" }, { p: 1, c: "#39D2C0" }],
               alphaStops: [{ p: 0, a: 1 }, { p: 1, a: 0 }] };
   A.objects.push(rr);
-  const p = win.buildPDF({});
+  const p = pdfExpand(win.buildPDF({}));
   t("emits a luminosity SMask", p.includes("/S /Luminosity"));
   t("mask is a Form XObject", p.includes("/Subtype /Form"));
   t("mask form declares a transparency group", p.includes("/S /Transparency"));

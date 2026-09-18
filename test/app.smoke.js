@@ -8,7 +8,17 @@ let JSDOM;
 try { JSDOM = require("jsdom").JSDOM; }
 catch (e) {
   try { JSDOM = require("/tmp/node_modules/jsdom").JSDOM; }
-  catch (e2) { console.log("SKIP: jsdom not installed (npm i -D jsdom)"); process.exit(0); }
+  catch (e2) {
+    /* Skipping silently would let a broken environment masquerade as a pass.
+       Opt in explicitly with GRAPHENE_SKIP_DOM=1 if jsdom is unavailable. */
+    if (process.env.GRAPHENE_SKIP_DOM === "1") {
+      console.log("SKIP: jsdom unavailable (GRAPHENE_SKIP_DOM=1)");
+      process.exit(0);
+    }
+    console.error("FATAL: jsdom is required for this suite. Run `npm install`,");
+    console.error("or set GRAPHENE_SKIP_DOM=1 to deliberately skip DOM tests.");
+    process.exit(1);
+  }
 }
 
 let pass = 0, fail = 0;

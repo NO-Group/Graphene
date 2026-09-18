@@ -37,10 +37,26 @@ class PDFDoc {
   put(id, body) { this.objects[id] = body; return id; }
   add(body) { const id = this.alloc(); return this.put(id, body); }
 
-  stream(dict, data) {
+  stream(dict, data, opts) {
     const id = this.alloc();
-    const bytes = typeof data === "string" ? data : String(data);
-    this.objects[id] = `<< ${dict} /Length ${byteLen(bytes)} >>\nstream\n${bytes}\nendstream`;
+    let bytes = typeof data === "string" ? data : String(data);
+    let extra = "";
+    /* Compress with FlateDecode when it helps and the dict has no filter of
+       its own (image XObjects arrive pre-compressed). */
+    const compressible = this.compress !== false &&
+      !/\/Filter/.test(dict) && (opts && opts.raw) !== true && bytes.length > 256;
+    if (compressible && typeof zlibDeflate === "function") {
+      try {
+        const u8 = new Uint8Array(bytes.length);
+        for (let i = 0; i < bytes.length; i++) u8[i] = bytes.charCodeAt(i) & 255;
+        const z = zlibDeflate(u8);
+        if (z.length < bytes.length) {
+          bytes = bytesToLatin1(z);
+          extra = " /Filter /FlateDecode";
+        }
+      } catch (e) { /* fall through uncompressed */ }
+    }
+    this.objects[id] = `<< ${dict}${extra} /Length ${byteLen(bytes)} >>\nstream\n${bytes}\nendstream`;
     return id;
   }
 
@@ -302,14 +318,34 @@ function meshShadingFor(ctx, o, bb) {
   const key = `mesh-${o.id}`;
   if (ctx.patterns.has(key)) return ctx.patterns.get(key);
   const mesh = (typeof meshOf === "function") ? meshOf(o) : (o.fill && o.fill.mesh);
-  if (!mesh) return null;
+  if (!mesh || typeof meshPatchList !== "function") return null;
 
   const cmyk = ctx.mode === "cmyk";
   const ncomp = cmyk ? 4 : 3;
-  const bpc = 8, bpcoord = 16, bpflag = 8;
-  const X0 = bb.x, Y0 = bb.y, X1 = bb.x + (bb.w || 1), Y1 = bb.y + (bb.h || 1);
-  const decode = `[${f3(X0)} ${f3(X1)} ${f3(Y0)} ${f3(Y1)}` +
-                 ` ${"0 1 ".repeat(ncomp).trim()}]`;
+
+  /* PDF interpolates patch colours BILINEARLY, but our colour field is
+     bicubic. Subdividing each cell lets the two converge; 3x3 keeps the
+     error invisible without bloating the file. */
+  const patches = meshPatchList(mesh, 3);
+  if (!patches.length) return null;
+
+  /* Coordinates are normalised (0..1) mesh space -> map into object space. */
+  const W = bb.w || 1, H = bb.h || 1;
+  const toX = u => bb.x + u * W, toY = v => bb.y + v * H;
+
+  /* Decode range must cover dragged nodes, which may sit outside the bbox. */
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const p of patches) {
+    for (const pt of p.pts) {
+      const x = toX(pt.x), y = toY(pt.y);
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+    }
+  }
+  if (!(maxX > minX)) { maxX = minX + 1; }
+  if (!(maxY > minY)) { maxY = minY + 1; }
 
   const bytes = [];
   const pushByte = v => bytes.push(Math.max(0, Math.min(255, Math.round(v))));
@@ -318,42 +354,28 @@ function meshShadingFor(ctx, o, bb) {
     const n = Math.max(0, Math.min(65535, Math.round(t * 65535)));
     bytes.push((n >> 8) & 255, n & 255);
   };
-  const pt = (r, c) => {
-    const n = mesh.nodes[r][c];
-    return { x: bb.x + n.u * (bb.w || 1), y: bb.y + n.v * (bb.h || 1) };
-  };
-  const colOf = (r, c) => {
-    const hex = mesh.nodes[r][c].c;
-    /* _pdfHex2rgb already returns 0..1 floats — do NOT divide again. */
-    return cmyk ? rgbToCmyk01(hex) : _pdfHex2rgb(hex);
-  };
-  /* a point one-third along a straight edge */
-  const lerp = (a, b, t) => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
+  const comps = hex => cmyk ? rgbToCmyk01(hex) : _pdfHex2rgb(hex);
 
-  for (let r = 0; r < mesh.rows - 1; r++) {
-    for (let c = 0; c < mesh.cols - 1; c++) {
-      const p00 = pt(r, c), p01 = pt(r, c + 1), p11 = pt(r + 1, c + 1), p10 = pt(r + 1, c);
-      /* Coons patch: 12 control points, counter-clockwise from the corner */
-      const edge = [
-        p00, lerp(p00, p01, 1 / 3), lerp(p00, p01, 2 / 3),
-        p01, lerp(p01, p11, 1 / 3), lerp(p01, p11, 2 / 3),
-        p11, lerp(p11, p10, 1 / 3), lerp(p11, p10, 2 / 3),
-        p10, lerp(p10, p00, 1 / 3), lerp(p10, p00, 2 / 3),
-      ];
-      pushByte(0);                                  // new patch
-      for (const p of edge) { pushCoord(p.x, X0, X1); pushCoord(p.y, Y0, Y1); }
-      for (const cc of [colOf(r, c), colOf(r, c + 1), colOf(r + 1, c + 1), colOf(r + 1, c)]) {
-        for (const v of cc) pushByte(v * 255);
-      }
+  for (const patch of patches) {
+    pushByte(0);                                   // flag 0: standalone patch
+    for (const pt of patch.pts) {
+      pushCoord(toX(pt.x), minX, maxX);
+      pushCoord(toY(pt.y), minY, maxY);
+    }
+    for (const hex of patch.colors) {
+      for (const v of comps(hex)) pushByte(v * 255);
     }
   }
+
   let data = "";
   for (let i = 0; i < bytes.length; i += 0x8000) {
     data += String.fromCharCode.apply(null, bytes.slice(i, i + 0x8000));
   }
+  const decode = `[${f3(minX)} ${f3(maxX)} ${f3(minY)} ${f3(maxY)}` +
+                 ` ${"0 1 ".repeat(ncomp).trim()}]`;
   const shId = ctx.doc.stream(
     `/ShadingType 6 /ColorSpace /Device${cmyk ? "CMYK" : "RGB"} ` +
-    `/BitsPerCoordinate ${bpcoord} /BitsPerComponent ${bpc} /BitsPerFlag ${bpflag} ` +
+    `/BitsPerCoordinate 16 /BitsPerComponent 8 /BitsPerFlag 8 ` +
     `/Decode ${decode}`, data);
   const m = ctx.patternMatrix || "1 0 0 1 0 0";
   const patId = ctx.doc.add(`<< /Type /Pattern /PatternType 2 /Matrix [${m}] /Shading ${shId} 0 R >>`);
@@ -362,6 +384,8 @@ function meshShadingFor(ctx, o, bb) {
   ctx.patterns.set(key, name);
   return name;
 }
+
+/* axial / radial shading pattern for a gradient fill */
 
 function shadingFor(ctx, o, bb) {
   const f = o.fill;
@@ -457,13 +481,13 @@ function imageFor(ctx, o) {
     } catch (e) {
       return null;                       // corrupt PNG: caller draws a box
     }
-    const body = bytesToLatin1(zlibStore(img.rgb));
+    const body = bytesToLatin1(zlibDeflate(img.rgb));
     let smask = "";
     if (img.alpha && !allOpaque(img.alpha)) {
       const aId = ctx.doc.stream(
         `/Type /XObject /Subtype /Image /Width ${img.w} /Height ${img.h} ` +
         `/ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /FlateDecode`,
-        bytesToLatin1(zlibStore(img.alpha)));
+        bytesToLatin1(zlibDeflate(img.alpha)));
       smask = ` /SMask ${aId} 0 R`;
     }
     dict = `/Type /XObject /Subtype /Image /Width ${img.w} /Height ${img.h} ` +
@@ -696,8 +720,12 @@ if (typeof document !== "undefined" && typeof $ === "function" && $("#pdf-modal"
   });
 }
 
+if (typeof meshPatchList === "undefined" && typeof require === "function") {
+  try { var { meshPatchList, meshOf } = require("./mesh.js"); } catch (e) {}
+}
+
 if (typeof decodePNG === "undefined" && typeof require === "function") {
-  try { var { decodePNG, zlibStore, bytesToLatin1 } = require("./png.js"); } catch (e) {}
+  try { var { decodePNG, zlibStore, zlibDeflate, bytesToLatin1 } = require("./png.js"); } catch (e) {}
 }
 
 if (typeof module !== "undefined" && module.exports) {

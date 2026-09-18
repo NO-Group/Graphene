@@ -6,7 +6,17 @@ let JSDOM;
 try { JSDOM = require("jsdom").JSDOM; }
 catch (e) {
   try { JSDOM = require("/tmp/node_modules/jsdom").JSDOM; }
-  catch (e2) { console.log("SKIP: jsdom not installed (npm i -D jsdom)"); process.exit(0); }
+  catch (e2) {
+    /* Skipping silently would let a broken environment masquerade as a pass.
+       Opt in explicitly with GRAPHENE_SKIP_DOM=1 if jsdom is unavailable. */
+    if (process.env.GRAPHENE_SKIP_DOM === "1") {
+      console.log("SKIP: jsdom unavailable (GRAPHENE_SKIP_DOM=1)");
+      process.exit(0);
+    }
+    console.error("FATAL: jsdom is required for this suite. Run `npm install`,");
+    console.error("or set GRAPHENE_SKIP_DOM=1 to deliberately skip DOM tests.");
+    process.exit(1);
+  }
 }
 
 /* a canvas stub that can actually "draw" a block glyph, so the
@@ -71,6 +81,25 @@ bridge.textContent = `
   ].forEach(n => { try { window[n] = eval(n); } catch (e) {} });`;
 win.document.body.appendChild(bridge);
 
+/* Streams may be FlateDecode-compressed. Expand them so assertions test the
+   real operators instead of accidentally passing on compressed noise. */
+function pdfExpand(src) {
+  const { zlibInflate } = require(path.join(ROOT, "js", "png.js"));
+  return src.replace(/<<([^>]*?)\/Filter \/FlateDecode([^>]*?)\/Length (\d+) >>\nstream\n([\s\S]*?)\nendstream/g,
+    (m, d1, d2, len, body) => {
+      try {
+        const u8 = new Uint8Array(body.length);
+        for (let i = 0; i < body.length; i++) u8[i] = body.charCodeAt(i) & 255;
+        const out = zlibInflate(u8);
+        let txt = "";
+        for (let i = 0; i < out.length; i += 0x8000) {
+          txt += String.fromCharCode.apply(null, out.subarray(i, i + 0x8000));
+        }
+        return `<<${d1}${d2}/Length ${txt.length} >>\nstream\n${txt}\nendstream`;
+      } catch (e) { return m; }
+    });
+}
+
 const A = win.App;
 let pass = 0, fail = 0;
 const t = (name, cond, extra) => {
@@ -95,7 +124,7 @@ A.objects = []; A.pages = null; A.doc.w = 400; A.doc.h = 300; A.doc.bg = "#fffff
 const r = win.makeRect(40, 40, 140, 90);
 r.fill = { type: "solid", color: "#FF5C7A", a: "#FF5C7A", b: "#000", angle: 0 };
 A.objects.push(r);
-let pdf = win.buildPDF({ colorSpace: "cmyk" });
+let pdf = pdfExpand(win.buildPDF({ colorSpace: "cmyk" }));
 
 t("starts with %PDF-1.7", pdf.startsWith("%PDF-1.7"));
 t("ends with %%EOF", pdf.trim().endsWith("%%EOF"));
@@ -138,7 +167,7 @@ function checkLengths(src) {
 t("stream /Length values are correct", checkLengths(pdf) === null, checkLengths(pdf));
 
 console.log("\n— RGB mode —");
-const rgbPdf = win.buildPDF({ colorSpace: "rgb" });
+const rgbPdf = pdfExpand(win.buildPDF({ colorSpace: "rgb" }));
 t("uses RGB 'rg' operator", /\b[\d.]+ [\d.]+ [\d.]+ rg\b/.test(rgbPdf));
 t("no CMYK 'k' operator in RGB mode", !/[\d.]+ [\d.]+ [\d.]+ [\d.]+ k\b/.test(rgbPdf));
 
@@ -148,7 +177,7 @@ const g = win.makeEllipse(20, 20, 100, 100);
 g.fill = { type: "linear", color: "#7C5CFF", a: "#7C5CFF", b: "#39D2C0", angle: 45,
            stops: [{ p: 0, c: "#7C5CFF" }, { p: .5, c: "#FF5C7A" }, { p: 1, c: "#39D2C0" }] };
 A.objects.push(g);
-pdf = win.buildPDF({ colorSpace: "cmyk" });
+pdf = pdfExpand(win.buildPDF({ colorSpace: "cmyk" }));
 t("axial shading emitted", pdf.includes("/ShadingType 2"));
 t("3 stops → stitching function", pdf.includes("/FunctionType 3"));
 t("two exponential sub-functions", (pdf.match(/\/FunctionType 2/g) || []).length === 2,
@@ -172,7 +201,7 @@ console.log("\n— text —");
 A.objects = [];
 const txt = win.makeText(20, 100, "Hello (PDF)");
 A.objects.push(txt);
-pdf = win.buildPDF({});
+pdf = pdfExpand(win.buildPDF({}));
 t("font resource present", pdf.includes("/Type /Font") && pdf.includes("/BaseFont /Helvetica"));
 t("text show operator present", pdf.includes(" Tj"));
 t("parentheses are escaped", pdf.includes("\\(PDF\\)"), (pdf.match(/\(Hello[^)]*\)/) || [])[0]);
@@ -183,7 +212,7 @@ console.log("\n— transparency & multi-page —");
 A.objects = [];
 const faded = win.makeRect(0, 0, 50, 50); faded.opacity = 0.4;
 A.objects.push(faded);
-pdf = win.buildPDF({});
+pdf = pdfExpand(win.buildPDF({}));
 t("ExtGState emitted for opacity", pdf.includes("/Type /ExtGState") && pdf.includes("/ca 0.4"));
 
 A.pages = [
@@ -191,14 +220,14 @@ A.pages = [
   { name: "P2", objects: [win.makeEllipse(0, 0, 10, 10)], guides: { h: [], v: [] } },
 ];
 A.pageIndex = 0; A.objects = A.pages[0].objects;
-pdf = win.buildPDF({ allPages: true });
+pdf = pdfExpand(win.buildPDF({ allPages: true }));
 t("two pages → /Count 2", pdf.includes("/Count 2"), (pdf.match(/\/Count \d+/) || [])[0]);
 t("single-page export → /Count 1", win.buildPDF({ allPages: false }).includes("/Count 1"));
 A.pages = null;
 
 console.log("\n— bleed & crop marks —");
 A.objects = [win.makeRect(0, 0, 50, 50)];
-pdf = win.buildPDF({ bleed: 9, marks: true });
+pdf = pdfExpand(win.buildPDF({ bleed: 9, marks: true }));
 t("TrimBox present", pdf.includes("/TrimBox"));
 t("BleedBox present", pdf.includes("/BleedBox"));
 t("MediaBox grew for marks", !pdf.includes("/MediaBox [0 0 400 300]"));
