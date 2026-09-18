@@ -193,7 +193,7 @@ Press `?` in the app for the full shortcut list.
 | `js/png.js` | DEFLATE **inflate + deflate** and a PNG decoder, all written from scratch: PNG artwork embeds losslessly and every exported stream is really compressed |
 | `sw.js` + `manifest.json` | Offline service worker + PWA install manifest |
 | `desktop/main.js` + `package.json` | Electron shell + electron-builder config for native Windows/macOS/Linux builds |
-| `test/` | 379 automated tests — boolean geometry, tracer, distortion, headless app smoke tests, simulated pointer interaction |
+| `test/` | 456 automated tests — boolean geometry, tracer, distortion, headless app smoke tests, simulated pointer interaction, service worker, storage resilience, full command sweep |
 
 ## Tests
 
@@ -211,16 +211,29 @@ npm test
   undo/redo, export and rendering
 - `test/interaction.test.js` — dispatches real pointer/keyboard events to draw,
   drag, marquee-select, duplicate, delete and undo
-- `test/pdf.test.js` — 58 tests: CMYK conversion, PDF object graph, xref offset
+- `test/pdf.test.js` — 64 tests: CMYK conversion, PDF object graph, xref offset
   integrity, stream `/Length` correctness, shadings, fonts & string escaping,
   transparency, bleed/crop marks, multi-stop gradients, text→curves
-- `test/png.test.js` — 108 tests: the DEFLATE inflater is verified byte-for-byte
+- `test/png.test.js` — 119 tests: the DEFLATE inflater is verified byte-for-byte
   against Node's `zlib` at every compression level, plus every PNG colour type,
   bit depth (1/2/4/8/16) and all five row filters. The compressor is checked the
   other way round — every output is inflated by Node's `zlib` *and* by Graphene's
   own inflater — and the Huffman builder is fuzzed to prove each code set
   satisfies the Kraft equality exactly (an incomplete tree is what real decoders
-  reject as "invalid code lengths set")
+  reject as "invalid code lengths set"). The decoder is also fuzzed with random
+  buffers and malformed headers: it must fail loudly, never hang or return
+  silently-wrong pixels
+- `test/sw.test.js` — 15 tests: the service worker runs in a vm against a fake
+  cache and a network that can be online, offline, failing or captive-portal.
+  Covers precache completeness, offline serving, request filtering, stale-cache
+  cleanup, and the rule that a failed response must never overwrite a good
+  cached asset
+- `test/storage.test.js` — 22 tests: boots the whole app against six hostile
+  `localStorage` implementations (private mode, quota exceeded, corrupt values,
+  wrong shapes) and seven autosave payloads, since both the palette and crash
+  recovery read storage during boot
+- `test/commands.test.js` — sweeps all 77 `data-cmd` commands twice, with a
+  populated selection and on an empty document, asserting none throws
 - `test/mesh.test.js` — 78 tests: mesh interpolation, Coons patch export,
   gradient transparency soft masks, PNG embedding, and command wiring. One test
   decodes the mesh patches back out of the exported PDF and checks they describe
