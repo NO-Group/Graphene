@@ -100,6 +100,12 @@ body {
 /* ---------- canvas ---------- */
 #canvas-wrap { flex: 1; position: relative; overflow: hidden; background: var(--bg); min-width: 0; }
 #stage { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+body.rulers-on #stage { top: 22px; left: 22px; width: calc(100% - 22px); height: calc(100% - 22px); }
+#ruler-h, #ruler-v, #ruler-corner { position: absolute; display: none; z-index: 10; background: var(--bg2); }
+body.rulers-on #ruler-h, body.rulers-on #ruler-v, body.rulers-on #ruler-corner { display: block; }
+#ruler-h { top: 0; left: 22px; right: 0; height: 22px; cursor: ns-resize; border-bottom: 1px solid var(--border); }
+#ruler-v { top: 22px; left: 0; bottom: 0; width: 22px; cursor: ew-resize; border-right: 1px solid var(--border); }
+#ruler-corner { top: 0; left: 0; width: 22px; height: 22px; border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); }
 #stage.tool-pan { cursor: grab; }
 #stage.tool-pan.panning { cursor: grabbing; }
 #stage.tool-draw { cursor: crosshair; }
@@ -223,6 +229,24 @@ input[type=range] { flex: 1; accent-color: var(--accent); min-width: 0; }
   margin-top: 20px; padding: 8px 18px; border: 0; border-radius: 7px; cursor: pointer;
   background: var(--accent); color: #fff; font: inherit; font-weight: 600;
 }
+
+/* ---------- context menu ---------- */
+#ctx-menu {
+  position: fixed; z-index: 600; min-width: 200px;
+  background: var(--bg3); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 5px; box-shadow: 0 12px 32px rgba(0,0,0,.55);
+}
+#ctx-menu[hidden] { display: none; }
+#ctx-menu button {
+  display: flex; width: 100%; align-items: center; justify-content: space-between; gap: 18px;
+  background: none; border: 0; color: var(--text); font: inherit; text-align: left;
+  padding: 7px 10px; border-radius: 6px; cursor: pointer; white-space: nowrap;
+}
+#ctx-menu button:hover { background: var(--accent); }
+#ctx-menu button:disabled { opacity: .35; pointer-events: none; }
+#ctx-menu kbd { font: 11px ui-monospace, monospace; color: var(--text-dim); }
+#ctx-menu button:hover kbd { color: #fff; }
+#ctx-menu hr { border: 0; border-top: 1px solid var(--border); margin: 5px 4px; }
 
 /* scrollbars */
 ::-webkit-scrollbar { width: 10px; height: 10px; }

@@ -6,8 +6,11 @@
 const App = {
   doc: {
     w: 1200, h: 800, bg: "#ffffff",
-    grid: { show: false, snap: false, size: 20 }
+    grid: { show: false, snap: false, size: 20 },
+    guides: { h: [], v: [] }
   },
+  rulers: true,
+  smartGuides: true,
   objects: [],            // z-order: index 0 = back
   selection: [],          // array of ids
   zoom: 1, panX: 0, panY: 0,
@@ -33,7 +36,13 @@ function baseObj(type) {
     rot: 0, opacity: 1, visible: true, locked: false,
     fill: { type: "solid", color: "#7C5CFF", a: "#7C5CFF", b: "#39D2C0", angle: 90 },
     stroke: { on: false, color: "#22242c", w: 2, style: "solid" },
+    fx: { shadow: false, sx: 4, sy: 4, sblur: 8, scolor: "#000000", blur: 0 },
   };
+}
+/* older saved objects may lack fx */
+function ensureFx(o) {
+  if (!o.fx) o.fx = { shadow: false, sx: 4, sy: 4, sblur: 8, scolor: "#000000", blur: 0 };
+  return o.fx;
 }
 
 function makeRect(x, y, w, h)   { return Object.assign(baseObj("rect"),   { x, y, w, h, rx: 0 }); }
@@ -59,6 +68,11 @@ function makePath(pts, closed) {
   return o;
 }
 function makeGroup(children) { return Object.assign(baseObj("group"), { children: children || [] }); }
+function makeImage(x, y, w, h, href) {
+  const o = Object.assign(baseObj("image"), { x, y, w, h, href });
+  o.fill.type = "none";
+  return o;
+}
 
 /* anchor point of a path: {x,y, hin:{x,y}|null, hout:{x,y}|null} */
 const anchor = (x, y, hin, hout) => ({ x, y, hin: hin || null, hout: hout || null });
@@ -92,7 +106,7 @@ function rotPt(px, py, cx, cy, deg) {
 /* untransformed (local) bbox of an object */
 function localBBox(o) {
   switch (o.type) {
-    case "rect": case "ellipse": case "polygon":
+    case "rect": case "ellipse": case "polygon": case "image":
       return { x: o.x, y: o.y, w: o.w, h: o.h };
     case "line": {
       const x = Math.min(o.x1, o.x2), y = Math.min(o.y1, o.y2);
@@ -158,17 +172,22 @@ function selectionBBox() {
 /* ---------- transforms on objects ---------- */
 function moveObj(o, dx, dy) {
   switch (o.type) {
-    case "rect": case "ellipse": case "polygon": case "text":
+    case "rect": case "ellipse": case "polygon": case "text": case "image":
       o.x += dx; o.y += dy; break;
     case "line":
       o.x1 += dx; o.y1 += dy; o.x2 += dx; o.y2 += dy; break;
-    case "path":
-      for (const p of o.pts) {
-        p.x += dx; p.y += dy;
-        if (p.hin) { p.hin.x += dx; p.hin.y += dy; }
-        if (p.hout) { p.hout.x += dx; p.hout.y += dy; }
-      }
+    case "path": {
+      const movePts = pts => {
+        for (const p of pts) {
+          p.x += dx; p.y += dy;
+          if (p.hin) { p.hin.x += dx; p.hin.y += dy; }
+          if (p.hout) { p.hout.x += dx; p.hout.y += dy; }
+        }
+      };
+      movePts(o.pts);
+      if (o.subpaths) for (const sp of o.subpaths) movePts(sp.pts);
       break;
+    }
     case "group":
       for (const c of o.children) moveObj(c, dx, dy); break;
   }
@@ -178,7 +197,7 @@ function moveObj(o, dx, dy) {
 function scaleObj(o, sx, sy, ox, oy) {
   const S = (x, y) => ({ x: ox + (x - ox) * sx, y: oy + (y - oy) * sy });
   switch (o.type) {
-    case "rect": case "ellipse": case "polygon": {
+    case "rect": case "ellipse": case "polygon": case "image": {
       const p = S(o.x, o.y), q = S(o.x + o.w, o.y + o.h);
       o.x = Math.min(p.x, q.x); o.y = Math.min(p.y, q.y);
       o.w = Math.abs(q.x - p.x); o.h = Math.abs(q.y - p.y);
@@ -189,13 +208,18 @@ function scaleObj(o, sx, sy, ox, oy) {
       const p = S(o.x1, o.y1), q = S(o.x2, o.y2);
       o.x1 = p.x; o.y1 = p.y; o.x2 = q.x; o.y2 = q.y; break;
     }
-    case "path":
-      for (const pt of o.pts) {
-        const p = S(pt.x, pt.y); pt.x = p.x; pt.y = p.y;
-        if (pt.hin) { const h = S(pt.hin.x, pt.hin.y); pt.hin.x = h.x; pt.hin.y = h.y; }
-        if (pt.hout) { const h = S(pt.hout.x, pt.hout.y); pt.hout.x = h.x; pt.hout.y = h.y; }
-      }
+    case "path": {
+      const scalePts = pts => {
+        for (const pt of pts) {
+          const p = S(pt.x, pt.y); pt.x = p.x; pt.y = p.y;
+          if (pt.hin) { const h = S(pt.hin.x, pt.hin.y); pt.hin.x = h.x; pt.hin.y = h.y; }
+          if (pt.hout) { const h = S(pt.hout.x, pt.hout.y); pt.hout.x = h.x; pt.hout.y = h.y; }
+        }
+      };
+      scalePts(o.pts);
+      if (o.subpaths) for (const sp of o.subpaths) scalePts(sp.pts);
       break;
+    }
     case "text": {
       const p = S(o.x, o.y); o.x = p.x; o.y = p.y;
       o.size = Math.max(2, o.size * Math.abs((Math.abs(sx) + Math.abs(sy)) / 2));
@@ -333,7 +357,7 @@ function snapPt(p) { return { x: snapVal(p.x), y: snapVal(p.y) }; }
 /* ---------- default naming ---------- */
 function autoName(o) {
   if (o.name) return o.name;
-  const names = { rect: "Rectangle", ellipse: "Ellipse", line: "Line", path: "Path", polygon: o.star ? "Star" : "Polygon", text: "Text", group: "Group" };
+  const names = { rect: "Rectangle", ellipse: "Ellipse", line: "Line", path: "Path", polygon: o.star ? "Star" : "Polygon", text: "Text", group: "Group", image: "Image" };
   let n = names[o.type] || "Object";
   if (o.type === "text") n = `"${(o.text || "").split("\n")[0].slice(0, 14)}"`;
   return n;

@@ -5,6 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Graphene — Vector Design Studio</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%237C5CFF'/%3E%3Cstop offset='1' stop-color='%2339D2C0'/%3E%3C/linearGradient%3E%3C/defs%3E%3Cpath fill='url(%23g)' d='M12 2l9 5v10l-9 5-9-5V7z'/%3E%3C/svg%3E">
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#16171c">
 <link rel="stylesheet" href="css/styles.css">
 </head>
 <body>
@@ -20,8 +22,13 @@
         <button data-cmd="open">Open Project… <kbd>Ctrl+O</kbd></button>
         <button data-cmd="save">Save Project <kbd>Ctrl+S</kbd></button>
         <hr>
+        <button data-cmd="import-image">Import Image…</button>
+        <button data-cmd="import-svg">Import SVG…</button>
+        <hr>
         <button data-cmd="export-svg">Export SVG</button>
-        <button data-cmd="export-png">Export PNG (2×)</button>
+        <button data-cmd="export-png">Export PNG (1×)</button>
+        <button data-cmd="export-png2">Export PNG (2×)</button>
+        <button data-cmd="export-png4">Export PNG (4×)</button>
       </div>
     </div>
     <div class="menu" data-menu>
@@ -54,6 +61,11 @@
         <button data-cmd="flip-v">Flip Vertical</button>
         <hr>
         <button data-cmd="to-path">Convert to Path <kbd>Ctrl+Shift+C</kbd></button>
+        <button data-cmd="combine">Combine Paths <kbd>Ctrl+L</kbd></button>
+        <button data-cmd="break-apart">Break Apart <kbd>Ctrl+K</kbd></button>
+        <hr>
+        <button data-cmd="lock">Lock <kbd>Ctrl+2</kbd></button>
+        <button data-cmd="unlock-all">Unlock All</button>
       </div>
     </div>
     <div class="menu" data-menu>
@@ -66,6 +78,9 @@
         <hr>
         <button data-cmd="toggle-grid">Toggle Grid <kbd>#</kbd></button>
         <button data-cmd="toggle-snap">Toggle Snap to Grid</button>
+        <button data-cmd="toggle-rulers">Toggle Rulers <kbd>Ctrl+R</kbd></button>
+        <button data-cmd="toggle-smart">Toggle Smart Guides</button>
+        <button data-cmd="clear-guides">Clear Guides</button>
       </div>
     </div>
     <div class="menu" data-menu>
@@ -93,12 +108,17 @@
   <aside id="toolbar"></aside>
 
   <div id="canvas-wrap">
+    <canvas id="ruler-h"></canvas>
+    <canvas id="ruler-v"></canvas>
+    <div id="ruler-corner" title="Drag from rulers to add guides"></div>
     <svg id="stage">
       <defs id="defs"></defs>
       <g id="world">
         <g id="board"></g>
         <g id="grid"></g>
         <g id="objects"></g>
+        <g id="guides"></g>
+        <g id="smartguides"></g>
         <g id="overlay"></g>
       </g>
     </svg>
@@ -223,6 +243,20 @@
         </div>
       </div>
 
+      <div class="prop-section" id="props-effects">
+        <h3>Effects</h3>
+        <div class="row">
+          <label class="chk"><input type="checkbox" id="in-shadow-on"> Drop shadow</label>
+          <input type="color" id="in-shadow-color">
+        </div>
+        <div class="row" id="shadow-rows">
+          <label>X <input type="number" id="in-shadow-x" step="1" value="4"></label>
+          <label>Y <input type="number" id="in-shadow-y" step="1" value="4"></label>
+          <label>Blur <input type="number" id="in-shadow-blur" min="0" step="1" value="8"></label>
+        </div>
+        <div class="row"><label class="grow slider-label">Blur <input type="range" id="in-blur" min="0" max="40" value="0" step="0.5"><span id="blur-val">0</span></label></div>
+      </div>
+
     </div>
 
     <div id="layers-block">
@@ -240,6 +274,10 @@
 </footer>
 
 <input type="file" id="file-open" hidden accept=".json,.graphene,application/json">
+<input type="file" id="file-image" hidden accept="image/png,image/jpeg,image/webp,image/gif">
+<input type="file" id="file-svg" hidden accept=".svg,image/svg+xml">
+
+<div id="ctx-menu" hidden></div>
 
 <div id="modal" hidden>
   <div id="modal-card">
@@ -263,6 +301,11 @@
       <b>Shift while resizing</b><span>Uniform scale</span>
       <b>Del</b><span>Delete selection (or anchor in node mode)</span>
       <b>1 / Shift+1</b><span>Zoom 100% / fit page</span>
+      <b>Ctrl+L / Ctrl+K</b><span>Combine paths / break apart</span>
+      <b>Ctrl+R</b><span>Toggle rulers (drag from a ruler to add a guide)</span>
+      <b>Ctrl+2</b><span>Lock selection</span>
+      <b>Right-click</b><span>Context menu</span>
+      <b>Drag &amp; drop / Ctrl+V</b><span>Import images (PNG, JPG, SVG) onto the canvas</span>
     </div>
     <button id="modal-close">Close</button>
   </div>
@@ -272,5 +315,11 @@
 <script src="js/render.js"></script>
 <script src="js/tools.js"></script>
 <script src="js/ui.js"></script>
+<script src="js/extras.js"></script>
+<script>
+if ("serviceWorker" in navigator && location.protocol !== "file:") {
+  navigator.serviceWorker.register("sw.js").catch(() => {});
+}
+</script>
 </body>
 </html>

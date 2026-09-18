@@ -5,7 +5,8 @@
 
 const stage = $("#stage");
 const gWorld = $("#world"), gBoard = $("#board"), gGrid = $("#grid"),
-      gObjects = $("#objects"), gOverlay = $("#overlay"), gDefs = $("#defs");
+      gObjects = $("#objects"), gOverlay = $("#overlay"), gDefs = $("#defs"),
+      gGuides = $("#guides"), gSmart = $("#smartguides");
 
 function svgEl(tag, attrs) {
   const el = document.createElementNS(SVGNS, tag);
@@ -45,8 +46,28 @@ function ensureGradient(o) {
   }
 }
 
+/* ---------- effects (drop shadow / blur) ---------- */
+function ensureFilter(o) {
+  const fx = ensureFx(o);
+  const fid = `fx-${o.id}`;
+  let f = document.getElementById(fid);
+  const need = fx.shadow || fx.blur > 0;
+  if (!need) { if (f) f.remove(); return null; }
+  if (f) f.remove();
+  f = svgEl("filter", { id: fid, x: "-40%", y: "-40%", width: "180%", height: "180%" });
+  if (fx.shadow) {
+    const ds = svgEl("feDropShadow", { dx: fx.sx, dy: fx.sy, stdDeviation: Math.max(0, fx.sblur / 2), "flood-color": fx.scolor, "flood-opacity": 0.6 });
+    f.appendChild(ds);
+  }
+  if (fx.blur > 0) f.appendChild(svgEl("feGaussianBlur", { stdDeviation: fx.blur }));
+  gDefs.appendChild(f);
+  return `url(#${fid})`;
+}
+
 function applyPaint(el, o) {
   ensureGradient(o);
+  const filt = ensureFilter(o);
+  if (filt) el.setAttribute("filter", filt);
   el.setAttribute("fill", o.type === "line" ? "none" : fillRef(o));
   const s = o.stroke;
   if (s && s.on && s.w > 0) {
@@ -83,7 +104,7 @@ function renderObj(o) {
       break;
     case "path":
       el = svgEl("path", { d: pathD(o) });
-      if (!o.closed) el.setAttribute("fill-rule", "evenodd");
+      if (!o.closed || (o.subpaths && o.subpaths.length > 1)) el.setAttribute("fill-rule", "evenodd");
       break;
     case "text": {
       el = svgEl("text", { x: o.x, y: o.y });
@@ -100,8 +121,15 @@ function renderObj(o) {
       });
       break;
     }
+    case "image":
+      el = svgEl("image", { x: o.x, y: o.y, width: Math.max(0, o.w), height: Math.max(0, o.h), preserveAspectRatio: "none" });
+      el.setAttributeNS("http://www.w3.org/1999/xlink", "href", o.href);
+      el.setAttribute("href", o.href);
+      break;
     case "group": {
       el = svgEl("g");
+      const gf = ensureFilter(o);
+      if (gf) el.setAttribute("filter", gf);
       for (const c of o.children) { const ce = renderObj(c); if (ce) el.appendChild(ce); }
       break;
     }
@@ -128,6 +156,7 @@ function render() {
   gBoard.appendChild(shadow); gBoard.appendChild(page);
 
   renderGrid();
+  renderGuides();
 
   // objects
   gObjects.innerHTML = "";
@@ -148,6 +177,45 @@ function renderGrid() {
   for (let y = 0; y <= App.doc.h; y += g) d += `M 0 ${y} H ${App.doc.w} `;
   gGrid.appendChild(svgEl("path", { d, stroke: "rgba(124,92,255,.16)", "stroke-width": 1 / App.zoom, fill: "none" }));
 }
+
+/* ---------- user guides ---------- */
+function renderGuides() {
+  gGuides.innerHTML = "";
+  const g = App.doc.guides;
+  if (!g) return;
+  const z = App.zoom, EXT = 100000;
+  g.h.forEach((y, i) => {
+    const ln = svgEl("line", { x1: -EXT, y1: y, x2: EXT, y2: y, stroke: "#39a7d2", "stroke-width": 1 / z, "data-guide": "h", "data-gi": i });
+    ln.style.cursor = "ns-resize";
+    gGuides.appendChild(ln);
+    // fat invisible hit area
+    const hit = svgEl("line", { x1: -EXT, y1: y, x2: EXT, y2: y, stroke: "transparent", "stroke-width": 8 / z, "data-guide": "h", "data-gi": i });
+    hit.style.cursor = "ns-resize";
+    gGuides.appendChild(hit);
+  });
+  g.v.forEach((x, i) => {
+    const ln = svgEl("line", { x1: x, y1: -EXT, x2: x, y2: EXT, stroke: "#39a7d2", "stroke-width": 1 / z, "data-guide": "v", "data-gi": i });
+    ln.style.cursor = "ew-resize";
+    gGuides.appendChild(ln);
+    const hit = svgEl("line", { x1: x, y1: -EXT, x2: x, y2: EXT, stroke: "transparent", "stroke-width": 8 / z, "data-guide": "v", "data-gi": i });
+    hit.style.cursor = "ew-resize";
+    gGuides.appendChild(hit);
+  });
+}
+
+/* ---------- smart alignment guides ---------- */
+function drawSmartGuides(lines) {
+  gSmart.innerHTML = "";
+  const z = App.zoom, EXT = 100000;
+  for (const l of lines) {
+    gSmart.appendChild(svgEl("line", {
+      x1: l.axis === "v" ? l.pos : -EXT, y1: l.axis === "v" ? -EXT : l.pos,
+      x2: l.axis === "v" ? l.pos : EXT, y2: l.axis === "v" ? EXT : l.pos,
+      stroke: "#ff5c7a", "stroke-width": 1 / z, "stroke-dasharray": `${5 / z} ${3 / z}`, "pointer-events": "none"
+    }));
+  }
+}
+function clearSmartGuides() { gSmart.innerHTML = ""; }
 
 /* ---------- selection overlay ---------- */
 const HANDLES = [

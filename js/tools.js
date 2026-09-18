@@ -124,6 +124,7 @@ function onPointerMove(e) {
       App.panX = drag.px + e.clientX - drag.sx;
       App.panY = drag.py + e.clientY - drag.sy;
       gWorld.setAttribute("transform", `translate(${App.panX} ${App.panY}) scale(${App.zoom})`);
+      drawRulers();
       break;
     case "move": moveDrag(e, w); break;
     case "resize": resizeDrag(e, w); break;
@@ -137,6 +138,12 @@ function onPointerMove(e) {
     case "pen-handle": penHandleDrag(e, w); break;
     case "node-move": nodeMoveDrag(e, w); break;
     case "node-handle": nodeHandleDrag(e, w); break;
+    case "guide": {
+      const arr = App.doc.guides[drag.axis];
+      arr[drag.gi] = drag.axis === "h" ? snapVal(w.y) : snapVal(w.x);
+      renderGuides(); drawRulers();
+      break;
+    }
   }
 }
 
@@ -147,8 +154,18 @@ function onPointerUp(e) {
 
   switch (d.mode) {
     case "move":
+      clearSmartGuides();
       if (d.moved) commit("move");
       break;
+    case "guide": {
+      // drop guide outside canvas view = delete it
+      const arr = App.doc.guides[d.axis];
+      const v = arr[d.gi];
+      const limit = d.axis === "h" ? App.doc.h : App.doc.w;
+      if (v < -2000 || v > limit + 2000) arr.splice(d.gi, 1);
+      commit("guide"); renderGuides(); drawRulers();
+      break;
+    }
     case "resize": commit("resize"); break;
     case "rotate": commit("rotate"); break;
     case "marquee": clearMarquee(); updateUI(); break;
@@ -184,6 +201,7 @@ function zoomAt(sx, sy, z) {
   App.panX = sx - r.left - wx * z;
   App.panY = sy - r.top - wy * z;
   render(); updateZoomLabel();
+  if (typeof drawRulers === "function") drawRulers();
 }
 function zoomFit() {
   const r = stage.getBoundingClientRect();
@@ -193,12 +211,19 @@ function zoomFit() {
   App.panX = (r.width - App.doc.w * z) / 2;
   App.panY = (r.height - App.doc.h * z) / 2;
   render(); updateZoomLabel();
+  if (typeof drawRulers === "function") drawRulers();
 }
 
 /* ============================================================
    SELECT tool
    ============================================================ */
 function selectDown(e, w) {
+  // dragging an existing guide
+  const gAxis = e.target.getAttribute && e.target.getAttribute("data-guide");
+  if (gAxis) {
+    drag = { mode: "guide", axis: gAxis, gi: +e.target.getAttribute("data-gi") };
+    return;
+  }
   const handle = e.target.getAttribute && e.target.getAttribute("data-handle");
   if (handle && App.selection.length) {
     if (handle === "rotate") {
@@ -232,6 +257,25 @@ function moveDrag(e, w) {
   let dx = w.x - drag.w0.x, dy = w.y - drag.w0.y;
   if (e.shiftKey) { if (Math.abs(dx) > Math.abs(dy)) dy = 0; else dx = 0; }
   if (App.doc.grid.snap) { const g = App.doc.grid.size; dx = Math.round(dx / g) * g; dy = Math.round(dy / g) * g; }
+
+  // smart guides: snap moved bbox to other objects / page / guides
+  let smartLines = [];
+  if (App.smartGuides && !App.doc.grid.snap && !e.altKey) {
+    if (!drag.bb0) {
+      drag.bb0 = null;
+      let bb = null;
+      for (const src of drag.orig) { const b = worldBBox(src); bb = bb ? unionBB(bb, b) : b; }
+      drag.bb0 = bb;
+    }
+    const bb = drag.bb0;
+    if (bb) {
+      const moved = { x: bb.x + dx, y: bb.y + dy, w: bb.w, h: bb.h };
+      const snap = smartSnap(moved, new Set(App.selection));
+      dx += snap.dx; dy += snap.dy;
+      smartLines = snap.lines;
+    }
+  }
+
   if (dx || dy) drag.moved = true;
   const objs = selectedObjs();
   objs.forEach((o, i) => {
@@ -240,7 +284,39 @@ function moveDrag(e, w) {
     moveObj(cp, dx, dy);
     Object.assign(o, cp);
   });
-  render(); syncTransformInputs();
+  render();
+  drawSmartGuides(smartLines);
+  syncTransformInputs();
+}
+
+/* snap a bbox against other objects' edges/centers, page, and guides */
+function smartSnap(bb, excludeIds) {
+  const T = 6 / App.zoom;       // snap threshold in world units
+  const vTargets = [0, App.doc.w / 2, App.doc.w, ...App.doc.guides.v];
+  const hTargets = [0, App.doc.h / 2, App.doc.h, ...App.doc.guides.h];
+  for (const o of App.objects) {
+    if (excludeIds.has(o.id) || !o.visible) continue;
+    const b = worldBBox(o);
+    vTargets.push(b.x, b.x + b.w / 2, b.x + b.w);
+    hTargets.push(b.y, b.y + b.h / 2, b.y + b.h);
+  }
+  const vProbes = [bb.x, bb.x + bb.w / 2, bb.x + bb.w];
+  const hProbes = [bb.y, bb.y + bb.h / 2, bb.y + bb.h];
+
+  let dx = 0, dy = 0, bestV = T, bestH = T;
+  let vLine = null, hLine = null;
+  for (const t of vTargets) for (const p of vProbes) {
+    const d = Math.abs(t - p);
+    if (d < bestV) { bestV = d; dx = t - p; vLine = t; }
+  }
+  for (const t of hTargets) for (const p of hProbes) {
+    const d = Math.abs(t - p);
+    if (d < bestH) { bestH = d; dy = t - p; hLine = t; }
+  }
+  const lines = [];
+  if (vLine != null) lines.push({ axis: "v", pos: vLine });
+  if (hLine != null) lines.push({ axis: "h", pos: hLine });
+  return { dx, dy, lines };
 }
 
 function resizeDrag(e, w) {
@@ -563,7 +639,7 @@ function onDblClick(e) {
     const o = hitObject(e);
     if (o && o.type === "text") { startTextEditor(o); return; }
     if (o && o.type === "path") { setTool("node"); App.nodeEdit.id = o.id; App.selection = [o.id]; render(); updateUI(); return; }
-    if (o && o.type !== "group") { setTool("node"); return; }
+    if (o && o.type !== "group" && o.type !== "image") { setTool("node"); return; }
   }
 }
 

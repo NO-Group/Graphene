@@ -1,19 +1,32 @@
 # Graphene — Vector Design Studio
 
-A fast, modern, browser-based vector graphics editor. No installs, no accounts,
-no 4 GB download — open `index.html` and design.
+A professional vector graphics editor that runs on **every computer** — in any
+modern browser, installed as an offline desktop PWA, or packaged as a native
+Windows / macOS / Linux app.
 
-![Graphene](https://img.shields.io/badge/vector-editor-7C5CFF) ![Zero dependencies](https://img.shields.io/badge/dependencies-0-39D2C0)
+![Graphene](https://img.shields.io/badge/vector-editor-7C5CFF) ![Zero runtime dependencies](https://img.shields.io/badge/runtime%20deps-0-39D2C0)
 
-## Run it
+## Run it — three ways
 
+**1. Browser (any OS, zero install)**
 ```bash
-# any static server works — zero build step, zero dependencies
-python3 -m http.server 8000
+python3 -m http.server 8000   # any static server works
 # → http://localhost:8000
 ```
 
-Or just double-click `index.html`.
+**2. Install as an app (offline-capable PWA)**
+Open it in Chrome/Edge and click *Install* in the address bar. Graphene then
+runs in its own window, works fully offline (service worker caches everything),
+and appears in your Start menu / dock like any other program.
+
+**3. Native desktop app (Windows / macOS / Linux)**
+```bash
+npm install
+npm run desktop        # run with Electron
+npm run dist:win       # build Windows installer (.exe) + portable
+npm run dist:mac       # build macOS .dmg
+npm run dist:linux     # build AppImage + .deb
+```
 
 ## Features
 
@@ -33,6 +46,20 @@ Or just double-click `index.html`.
 - Solid fills, linear gradients (with angle control), radial gradients
 - Strokes with width, color, solid/dashed/dotted styles
 - Per-object opacity
+
+**Pro workspace**
+- Rulers with adaptive tick scale (Ctrl+R) — drag from a ruler to create guides,
+  drag guides off-canvas to delete
+- Smart alignment guides: objects snap to other objects' edges/centers, page
+  center/edges, and your guides while moving
+- Right-click context menu with the full object toolkit
+- Combine paths (Ctrl+L) / Break apart (Ctrl+K) — CorelDRAW-style multi-subpath
+  objects with even-odd holes
+- Drop shadow and gaussian blur effects per object (exported to SVG/PNG)
+- Import images: PNG/JPG/WebP/GIF via menu, drag-and-drop, or Ctrl+V paste
+- Import SVG files — parsed into native editable objects (rect, circle, ellipse,
+  line, polygon, polyline, path with full bezier data, text)
+- Lock objects (Ctrl+2) / Unlock all
 
 **Workflow**
 - Full undo/redo history (100 steps)
@@ -60,5 +87,12 @@ Press `?` in the app for the full shortcut list.
 | `js/render.js` | SVG scene renderer, gradients, grid, selection & node-editing overlays |
 | `js/tools.js` | Pointer state machine for all tools: select/transform, pen, pencil (RDP + Catmull-Rom smoothing), node editing, text editing |
 | `js/ui.js` | Toolbar, menus, properties panel, layers panel, keyboard shortcuts, file IO & export |
+| `js/extras.js` | Rulers & guides, smart-guide snapping targets, context menu, image/SVG import (incl. a path-`d` parser), combine/break-apart, lock tools |
+| `sw.js` + `manifest.json` | Offline service worker + PWA install manifest |
+| `desktop/main.js` + `package.json` | Electron shell + electron-builder config for native Windows/macOS/Linux builds |
 
-Everything is vanilla ES2020 + SVG — no frameworks, no build step.
+The editor itself is vanilla ES2020 + SVG — no frameworks, no build step, and
+the same codebase powers the browser, PWA, and desktop versions.
+
+> "Who builds a serious app with HTML?" — Figma, Canva, Photoshop Web, and
+> VS Code, among others. The trick is doing it properly.

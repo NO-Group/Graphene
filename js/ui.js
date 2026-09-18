@@ -47,8 +47,12 @@ function runCommand(cmd) {
     case "new": newDocument(); break;
     case "open": $("#file-open").click(); break;
     case "save": saveProject(); break;
+    case "import-image": $("#file-image").click(); break;
+    case "import-svg": $("#file-svg").click(); break;
     case "export-svg": exportSVG(); break;
-    case "export-png": exportPNG(2); break;
+    case "export-png": exportPNG(1); break;
+    case "export-png2": exportPNG(2); break;
+    case "export-png4": exportPNG(4); break;
     case "undo": undo(); break;
     case "redo": redo(); break;
     case "cut": copySelection(); deleteSelection(); break;
@@ -68,6 +72,13 @@ function runCommand(cmd) {
     case "flip-h": applyToSelection(o => flipObj(o, true), "flip"); break;
     case "flip-v": applyToSelection(o => flipObj(o, false), "flip"); break;
     case "to-path": convertSelectionToPath(); break;
+    case "combine": combinePaths(); break;
+    case "break-apart": breakApart(); break;
+    case "lock": lockSelection(); break;
+    case "unlock-all": unlockAll(); break;
+    case "toggle-rulers": setRulers(!App.rulers); break;
+    case "toggle-smart": App.smartGuides = !App.smartGuides; setHint("Smart guides " + (App.smartGuides ? "on" : "off")); break;
+    case "clear-guides": App.doc.guides = { h: [], v: [] }; commit("clear guides"); render(); break;
     case "zoom-in": zoomAt(stageCenter().x, stageCenter().y, App.zoom * 1.25); break;
     case "zoom-out": zoomAt(stageCenter().x, stageCenter().y, App.zoom / 1.25); break;
     case "zoom-100": zoomAt(stageCenter().x, stageCenter().y, 1); break;
@@ -254,6 +265,9 @@ const P = {
   fillColor: $("#in-fill-color"), gradA: $("#in-grad-a"), gradB: $("#in-grad-b"),
   gradAngle: $("#in-grad-angle"), angleVal: $("#angle-val"),
   strokeOn: $("#in-stroke-on"), strokeColor: $("#in-stroke-color"), strokeW: $("#in-stroke-w"), strokeStyle: $("#in-stroke-style"),
+  shadowOn: $("#in-shadow-on"), shadowColor: $("#in-shadow-color"),
+  shadowX: $("#in-shadow-x"), shadowY: $("#in-shadow-y"), shadowBlur: $("#in-shadow-blur"),
+  blur: $("#in-blur"), blurVal: $("#blur-val"),
 };
 
 let uiSyncing = false;
@@ -269,9 +283,10 @@ function updateUI() {
   show("#props-rect", one && one.type === "rect");
   show("#props-polygon", one && one.type === "polygon");
   show("#props-text", one && one.type === "text");
-  const paintable = objs.length > 0 && objs.some(o => o.type !== "group");
+  const paintable = objs.length > 0 && objs.some(o => o.type !== "group" && o.type !== "image");
   show("#props-fill", paintable);
   show("#props-stroke", paintable);
+  show("#props-effects", objs.length > 0);
 
   syncDocInputs();
   syncTransformInputs();
@@ -291,7 +306,17 @@ function updateUI() {
     }
   }
 
-  const paintRef = objs.find(o => o.type !== "group");
+  // effects
+  if (objs.length) {
+    const fx = ensureFx(objs[0]);
+    P.shadowOn.checked = fx.shadow;
+    P.shadowColor.value = toHex(fx.scolor);
+    P.shadowX.value = fx.sx; P.shadowY.value = fx.sy; P.shadowBlur.value = fx.sblur;
+    $("#shadow-rows").style.display = fx.shadow ? "" : "none";
+    P.blur.value = fx.blur; P.blurVal.textContent = fx.blur;
+  }
+
+  const paintRef = objs.find(o => o.type !== "group" && o.type !== "image");
   if (paintRef) {
     const f = paintRef.fill;
     $$("#fill-type-seg button").forEach(b => b.classList.toggle("on", b.dataset.filltype === f.type));
@@ -443,9 +468,24 @@ onInput(P.strokeW, () => { eachPaintable(o => { o.stroke.w = Math.max(0, +P.stro
 onInput(P.strokeStyle, () => { eachPaintable(o => o.stroke.style = P.strokeStyle.value); render(); }, "stroke style");
 
 function eachPaintable(fn) {
-  const walk = o => { if (o.type === "group") o.children.forEach(walk); else fn(o); };
+  const walk = o => { if (o.type === "group") o.children.forEach(walk); else if (o.type !== "image") fn(o); };
   selectedObjs().forEach(walk);
 }
+
+/* effects */
+P.shadowOn.addEventListener("change", () => {
+  for (const o of selectedObjs()) ensureFx(o).shadow = P.shadowOn.checked;
+  commit("shadow"); render(); updateUI();
+});
+onInput(P.shadowColor, () => { for (const o of selectedObjs()) ensureFx(o).scolor = P.shadowColor.value; render(); }, "shadow");
+onInput(P.shadowX, () => { for (const o of selectedObjs()) ensureFx(o).sx = +P.shadowX.value || 0; render(); }, "shadow");
+onInput(P.shadowY, () => { for (const o of selectedObjs()) ensureFx(o).sy = +P.shadowY.value || 0; render(); }, "shadow");
+onInput(P.shadowBlur, () => { for (const o of selectedObjs()) ensureFx(o).sblur = Math.max(0, +P.shadowBlur.value || 0); render(); }, "shadow");
+onInput(P.blur, () => {
+  const v = +P.blur.value;
+  for (const o of selectedObjs()) ensureFx(o).blur = v;
+  P.blurVal.textContent = v; render();
+}, "blur");
 
 /* ============================================================
    Layers panel
@@ -458,6 +498,7 @@ const layerIcons = {
   path: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 12C5 4 11 4 14 12"/></svg>',
   text: '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M3 3h10v2.5h-1.6V4.8H9v7h1.5V13h-5v-1.2H7v-7H4.6v.7H3z"/></svg>',
   group: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="2" width="8" height="8" rx="1"/><rect x="6" y="6" width="8" height="8" rx="1"/></svg>',
+  image: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="3" width="12" height="10" rx="1"/><circle cx="5.5" cy="6.5" r="1.2" fill="currentColor" stroke="none"/><path d="M2 11l3.5-3 3 2.5L12 7l2 2"/></svg>',
 };
 const eyeOpen = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M1.5 8s2.5-4.5 6.5-4.5S14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8z"/><circle cx="8" cy="8" r="2"/></svg>';
 const eyeClosed = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 12l12-8"/><path d="M3.5 9.5C2.3 8.6 1.5 8 1.5 8S4 3.5 8 3.5c.8 0 1.6.2 2.3.5M12.6 6.6c1.2.9 1.9 1.4 1.9 1.4S12 12.5 8 12.5c-.8 0-1.6-.2-2.3-.5"/></svg>';
@@ -557,6 +598,10 @@ window.addEventListener("keydown", e => {
     if (k === "[") { e.preventDefault(); reorder("backward"); return; }
     if (e.altKey && k === "n") { e.preventDefault(); newDocument(); return; }
     if (e.shiftKey && k === "c") { e.preventDefault(); convertSelectionToPath(); return; }
+    if (k === "l") { e.preventDefault(); combinePaths(); return; }
+    if (k === "k") { e.preventDefault(); breakApart(); return; }
+    if (k === "r") { e.preventDefault(); setRulers(!App.rulers); return; }
+    if (k === "2") { e.preventDefault(); lockSelection(); return; }
     return;
   }
 
@@ -618,7 +663,7 @@ $("#modal").addEventListener("click", e => { if (e.target.id === "modal") $("#mo
 function newDocument() {
   if (App.objects.length && !confirm("Start a new document? Unsaved changes will be lost.")) return;
   App.objects = []; App.selection = []; App.nodeEdit = { id: null, sel: [] };
-  App.doc = { w: 1200, h: 800, bg: "#ffffff", grid: { show: false, snap: false, size: 20 } };
+  App.doc = { w: 1200, h: 800, bg: "#ffffff", grid: { show: false, snap: false, size: 20 }, guides: { h: [], v: [] } };
   App.history = []; App.histIndex = -1;
   commit("new");
   zoomFit(); updateUI();
@@ -638,7 +683,9 @@ $("#file-open").addEventListener("change", e => {
     try {
       const s = JSON.parse(rd.result);
       if (!s.objects || !s.doc) throw new Error("bad file");
-      App.doc = s.doc; App.objects = s.objects; App.idSeq = s.idSeq || 1000;
+      App.doc = s.doc;
+      if (!App.doc.guides) App.doc.guides = { h: [], v: [] };
+      App.objects = s.objects; App.idSeq = s.idSeq || 1000;
       App.selection = []; App.nodeEdit = { id: null, sel: [] };
       App.history = []; App.histIndex = -1;
       commit("open");
@@ -664,11 +711,13 @@ function buildExportSVG() {
     if (el) svg.appendChild(el);
   }
   const collect = o => {
-    if (o.type === "group") { o.children.forEach(collect); return; }
     if (o.fill && (o.fill.type === "linear" || o.fill.type === "radial")) {
       const g = document.getElementById(`grad-${o.id}`);
       if (g) defs.appendChild(g.cloneNode(true));
     }
+    const f = document.getElementById(`fx-${o.id}`);
+    if (f) defs.appendChild(f.cloneNode(true));
+    if (o.type === "group") o.children.forEach(collect);
   };
   App.objects.forEach(collect);
   return svg;
