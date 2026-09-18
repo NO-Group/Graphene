@@ -166,11 +166,32 @@ const PALETTE = [
   "#006D77", "#83C5BE", "#EDF6F9", "#FFDDD2", "#E29578", "#8B4513",
 ];
 
+/* localStorage is not always usable: Safari's private mode throws SecurityError
+   on access, storage can be full, and the stored value can be corrupt or of the
+   wrong shape. renderPalette() runs during boot, so an exception here used to
+   abort startup and leave the user with a blank editor. */
+const SWATCH_KEY = "graphene-swatches";
+
+function loadSwatches() {
+  let raw;
+  try { raw = localStorage.getItem(SWATCH_KEY); } catch (e) { return []; }
+  if (!raw) return [];
+  let parsed;
+  try { parsed = JSON.parse(raw); } catch (e) { return []; }
+  if (!Array.isArray(parsed)) return [];
+  return parsed.filter(c => typeof c === "string" && /^#[0-9a-f]{3,8}$/i.test(c));
+}
+
+function saveSwatches(list) {
+  try { localStorage.setItem(SWATCH_KEY, JSON.stringify(list)); return true; }
+  catch (e) { return false; }          // private mode or quota exceeded
+}
+
 function renderPalette() {
   const el = $("#palette");
   if (!el) return;
   el.innerHTML = "";
-  const custom = JSON.parse(localStorage.getItem("graphene-swatches") || "[]");
+  const custom = loadSwatches();
   [...PALETTE, ...custom].forEach(c => {
     const b = document.createElement("button");
     b.className = "swatch";
@@ -194,11 +215,11 @@ function renderPalette() {
   add.addEventListener("click", () => {
     const o = selectedObjs().find(x => x.fill && x.fill.type === "solid");
     const c = o ? o.fill.color : App.doc.bg;
-    const list = JSON.parse(localStorage.getItem("graphene-swatches") || "[]");
+    const list = loadSwatches();
     if (!list.includes(c)) list.push(c);
-    localStorage.setItem("graphene-swatches", JSON.stringify(list));
+    const saved = saveSwatches(list);
     renderPalette();
-    setHint(`Swatch ${c} saved`);
+    setHint(saved ? `Swatch ${c} saved` : `Swatch ${c} added (couldn't save to this browser)`);
   });
   el.appendChild(add);
 }
@@ -495,21 +516,34 @@ function checkRecovery() {
     `<button id="rec-restore">Restore</button><button id="rec-discard">Discard</button>`;
   document.body.appendChild(bar);
   $("#rec-restore").addEventListener("click", () => {
-    App.doc = s.doc;
-    App.pages = s.pages;
-    App.pageIndex = clamp(s.pageIndex || 0, 0, s.pages.length - 1);
-    App.objects = App.pages[App.pageIndex].objects;
-    App.doc.guides = App.pages[App.pageIndex].guides || { h: [], v: [] };
-    App.idSeq = s.idSeq || 1000;
-    App.selection = [];
-    App.history = []; App.histIndex = -1;
-    commit("restore");
-    render(); updateUI(); renderPageBar(); zoomFit();
-    bar.remove();
-    setHint("Work restored ✓");
+    /* Autosaved data is as untrustworthy as a file on disk: it may have been
+       written by an older version, or truncated by a crash mid-write. Run it
+       through the same normalisation the file loader uses. */
+    try {
+      const pages = s.pages
+        .filter(p => p && typeof p === "object")
+        .map(p => ({ ...p, objects: (typeof sanitizeObjects === "function" ? sanitizeObjects(p.objects) : p.objects) || [] }));
+      if (!pages.length) throw new Error("no usable pages");
+      App.doc = typeof normalizeDoc === "function" ? normalizeDoc(s.doc) : (s.doc || {});
+      App.pages = pages;
+      App.pageIndex = clamp(s.pageIndex || 0, 0, pages.length - 1);
+      App.objects = App.pages[App.pageIndex].objects;
+      const g = App.pages[App.pageIndex].guides;
+      App.doc.guides = (g && Array.isArray(g.h) && Array.isArray(g.v)) ? g : { h: [], v: [] };
+      App.idSeq = (typeof s.idSeq === "number" && s.idSeq > 0) ? s.idSeq : 1000;
+      App.selection = []; App.nodeEdit = { id: null, sel: [] };
+      App.history = []; App.histIndex = -1;
+      commit("restore");
+      render(); updateUI(); renderPageBar(); zoomFit();
+      bar.remove();
+      setHint("Work restored ✓");
+    } catch (err) {
+      bar.remove();
+      setHint("Could not restore that autosave");
+    }
   });
   $("#rec-discard").addEventListener("click", () => {
-    localStorage.removeItem(AUTOSAVE_KEY);
+    try { localStorage.removeItem(AUTOSAVE_KEY); } catch (e) { /* private mode */ }
     bar.remove();
   });
   setTimeout(() => bar.remove(), 30000);
