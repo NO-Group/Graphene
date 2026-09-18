@@ -244,6 +244,18 @@ function decodePNG(bytes) {
   if (!w || !h) throw new Error("png: missing IHDR");
   if (!idat.length) throw new Error("png: missing IDAT");
   if (_PNG_CHANNELS[colorType] === undefined) throw new Error("png: bad colour type");
+  /* Only these bit depths exist (PNG spec 11.2.2). An invalid one used to slip
+     through and produce silently wrong pixels via sampleAt()'s shift maths. */
+  if (![1, 2, 4, 8, 16].includes(depth)) throw new Error("png: bad bit depth " + depth);
+  const _DEPTHS_FOR = { 0: [1, 2, 4, 8, 16], 2: [8, 16], 3: [1, 2, 4, 8], 4: [8, 16], 6: [8, 16] };
+  if (!_DEPTHS_FOR[colorType].includes(depth)) {
+    throw new Error("png: depth " + depth + " invalid for colour type " + colorType);
+  }
+  /* Refuse absurd dimensions with a clear message rather than letting the
+     typed-array allocation fail with "Array buffer allocation failed". */
+  if (w > 32768 || h > 32768 || w * h > 40e6) {
+    throw new Error("png: image too large (" + w + "x" + h + ")");
+  }
 
   let total = 0; for (const c of idat) total += c.length;
   const comp = new Uint8Array(total);

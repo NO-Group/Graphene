@@ -468,20 +468,88 @@ function parsePathD(d) {
   return { pts, closed };
 }
 
+/* Normalise a document record loaded from disk. Older files (and hand-edited
+   ones) can be missing whole sub-objects; previously only `guides` was restored,
+   so a file without `grid` left render() throwing on every frame. */
+function normalizeDoc(d) {
+  const def = { w: 1200, h: 800, bg: "#ffffff" };
+  const doc = (d && typeof d === "object" && !Array.isArray(d)) ? d : {};
+  const num = (v, fallback) => (typeof v === "number" && isFinite(v) && v > 0 ? v : fallback);
+  doc.w = num(doc.w, def.w);
+  doc.h = num(doc.h, def.h);
+  if (typeof doc.bg !== "string") doc.bg = def.bg;
+  const g = doc.grid && typeof doc.grid === "object" ? doc.grid : {};
+  doc.grid = { show: !!g.show, snap: !!g.snap, size: num(g.size, 20) };
+  const gu = doc.guides && typeof doc.guides === "object" ? doc.guides : {};
+  doc.guides = { h: Array.isArray(gu.h) ? gu.h.filter(isFinite) : [], v: Array.isArray(gu.v) ? gu.v.filter(isFinite) : [] };
+  return doc;
+}
+
+/* An object is only usable if it has an id and a known type. Anything else is
+   dropped rather than allowed to poison render/export later. */
+function sanitizeObjects(list) {
+  if (!Array.isArray(list)) return null;
+  const out = [];
+  for (const o of list) {
+    if (!o || typeof o !== "object" || Array.isArray(o)) continue;
+    if (typeof o.type !== "string") continue;
+    /* JSON.stringify turns NaN/Infinity into null, so a round-tripped file
+       carries nulls, not numbers - check for "not a finite number" instead. */
+    for (const k of ["x", "y", "w", "h"]) if (k in o && !Number.isFinite(o[k])) o[k] = 0;
+    if (Array.isArray(o.pts)) {
+      for (const pt of o.pts) {
+        if (!pt || typeof pt !== "object") continue;
+        for (const k of ["x", "y", "cx1", "cy1", "cx2", "cy2"]) {
+          if (k in pt && pt[k] !== null && pt[k] !== undefined && !Number.isFinite(pt[k])) pt[k] = 0;
+        }
+      }
+    }
+    if (!o.id) o.id = "o" + (App.idSeq = (App.idSeq || 1000) + 1);
+    out.push(o);
+  }
+  return out;
+}
+
 function openProjectFile(f) {
   const rd = new FileReader();
   rd.onload = () => {
+    /* Parse and validate into locals FIRST. The old version assigned straight
+       into App and only then discovered the file was bad, leaving the editor
+       wedged on a half-loaded document. */
+    let parsed;
+    try { parsed = JSON.parse(rd.result); }
+    catch (e) { alert("Not a valid Graphene project: the file isn't JSON."); return; }
+    if (!parsed || typeof parsed !== "object") { alert("Not a valid Graphene project."); return; }
+
+    const objects = sanitizeObjects(parsed.objects);
+    const pages = Array.isArray(parsed.pages)
+      ? parsed.pages.filter(p => p && typeof p === "object").map(p => ({ ...p, objects: sanitizeObjects(p.objects) || [] }))
+      : null;
+    if (!objects && !(pages && pages.length)) {
+      alert("Not a valid Graphene project: no objects found.");
+      return;
+    }
+    const doc = normalizeDoc(parsed.doc);
+
     try {
-      const s = JSON.parse(rd.result);
-      if (!s.objects || !s.doc) throw new Error("bad");
-      App.doc = s.doc;
-      if (!App.doc.guides) App.doc.guides = { h: [], v: [] };
-      App.objects = s.objects; App.idSeq = s.idSeq || 1000;
+      App.doc = doc;
+      App.objects = objects || (pages[0] && pages[0].objects) || [];
+      if (pages && pages.length) {
+        App.pages = pages;
+        App.pageIndex = Math.min(Math.max(0, parsed.pageIndex | 0), pages.length - 1);
+        App.objects = pages[App.pageIndex].objects;
+      } else {
+        App.pages = null; App.pageIndex = 0;
+      }
+      App.idSeq = (typeof parsed.idSeq === "number" && parsed.idSeq > 0) ? parsed.idSeq : 1000;
       App.selection = []; App.nodeEdit = { id: null, sel: [] };
       App.history = []; App.histIndex = -1;
       commit("open");
       zoomFit(); updateUI();
-    } catch (e) { alert("Not a valid Graphene project."); }
+      if (typeof setHint === "function") setHint("Project opened ✓");
+    } catch (e) {
+      alert("Could not open this project: " + e.message);
+    }
   };
   rd.readAsText(f);
 }

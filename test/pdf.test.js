@@ -194,8 +194,38 @@ t("radial shading emitted", win.buildPDF({}).includes("/ShadingType 3"));
 /* regression: replacing App.objects must not leave the page on a stale array */
 A.objects = [Object.assign(win.makeRect(0, 0, 10, 10), { fill: { type: "solid", color: "#123456", a: "#123456", b: "#000", angle: 0 } })];
 A.objects = [Object.assign(win.makeEllipse(0, 0, 10, 10), { fill: { type: "solid", color: "#abcdef", a: "#abcdef", b: "#000", angle: 0 } })];
-t("re-assigned App.objects reaches the PDF", !win.buildPDF({ colorSpace: "rgb" }).includes("0 0 10 10 re"),
-  "page held a stale objects array");
+{
+  /* Must inflate first: with Flate on, a raw-string grep for an operator can
+     never match, so the negative assertion would pass for the wrong reason.
+     Assert the positive half too, otherwise an empty page also "passes". */
+  const staleCheck = pdfExpand(win.buildPDF({ colorSpace: "rgb" }));
+  t("re-assigned App.objects reaches the PDF", !staleCheck.includes("0 0 10 10 re"),
+    "page held a stale objects array");
+  t("...and the replacement object is actually drawn",
+    /0\.6[0-9]* 0\.8[0-9]* 0\.9[0-9]* rg|c\b/.test(staleCheck) && staleCheck.includes(" c\n"),
+    "no curve operators - page may be empty, making the check above vacuous");
+}
+
+
+/* ---- hostile geometry must never corrupt the PDF ------------------------
+ * JSON.stringify writes NaN/Infinity as null, so a saved-and-reopened project
+ * carries nulls where numbers belong. The global isFinite() coerces null to 0
+ * and reports "finite", so the old guard in f3 let null through to .toFixed. */
+console.log("\n— malformed geometry —");
+{
+  A.objects = [
+    win.makeRect(10, 10, 100, 80),
+    Object.assign(win.makeRect(50, 50, 60, 60), { x: null, y: undefined, w: "abc", h: NaN }),
+    Object.assign(win.makeEllipse(20, 20, 40, 40), { x: Infinity, y: -Infinity }),
+  ];
+  let pdf = "", threw = "";
+  try { pdf = win.buildPDF({ colorSpace: "rgb" }); } catch (e) { threw = e.message; }
+  t("builds despite null/NaN/Infinity/string geometry", !threw, threw);
+  t("no NaN token reaches the output", !/\bNaN\b/.test(pdf));
+  t("no Infinity token reaches the output", !/\bInfinity\b/.test(pdf));
+  t("still a well-formed PDF", pdf.startsWith("%PDF") && pdf.trimEnd().endsWith("%%EOF"));
+  t("xref offset still parses", /startxref\s+\d+/.test(pdf));
+}
 
 console.log("\n— text —");
 A.objects = [];

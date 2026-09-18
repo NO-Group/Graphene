@@ -304,5 +304,61 @@ const freqOf = (n, fn) => { const f = new Array(n).fill(0); for (let i = 0; i < 
   t("single-symbol image survives real zlib", ok2, why2);
 }
 
+
+/* ---- malformed input must fail loudly, never hang or return junk --------
+ * Found by fuzzing: an invalid bit depth (3) was accepted and produced silently
+ * wrong pixels through sampleAt()'s shift maths, and absurd dimensions surfaced
+ * as an opaque "Array buffer allocation failed" from the allocator. */
+function rejects(bytes) {
+  try { decodePNG(bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes)); return false; }
+  catch (e) { return /^png:|^zlib:/.test(e.message); }
+}
+function mkPNG(w, h, depth, ct, payload) {
+  const ih = Buffer.alloc(13);
+  ih.writeUInt32BE(w, 0); ih.writeUInt32BE(h, 4); ih[8] = depth; ih[9] = ct;
+  return new Uint8Array(Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    chunk("IHDR", ih), chunk("IDAT", payload), chunk("IEND", Buffer.alloc(0)),
+  ]));
+}
+const somePixels = zlib.deflateSync(Buffer.alloc(64));
+t("rejects invalid bit depth 3", rejects(mkPNG(4, 4, 3, 2, somePixels)));
+t("rejects invalid bit depth 7", rejects(mkPNG(4, 4, 7, 2, somePixels)));
+t("rejects depth 1 on truecolour", rejects(mkPNG(4, 4, 1, 2, somePixels)));
+t("rejects depth 16 on palette", rejects(mkPNG(4, 4, 16, 3, somePixels)));
+t("rejects absurd dimensions with a clear message", rejects(mkPNG(100000, 100000, 8, 2, somePixels)));
+t("rejects bad colour type", rejects(mkPNG(4, 4, 8, 5, somePixels)));
+t("rejects non-zlib IDAT", rejects(mkPNG(4, 4, 8, 2, Buffer.from("not compressed"))));
+t("rejects bad filter byte", rejects(mkPNG(2, 2, 8, 2, zlib.deflateSync(Buffer.from([99, 1, 2, 3, 4, 5, 6, 99, 1, 2, 3, 4, 5, 6])))));
+
+/* legal depth/colour-type pairs must still decode */
+{
+  let okPairs = 0, badPairs = [];
+  const legal = { 0: [1, 2, 4, 8, 16], 2: [8, 16], 4: [8, 16], 6: [8, 16] };
+  for (const ct of Object.keys(legal)) for (const d of legal[ct]) {
+    const ch = { 0: 1, 2: 3, 4: 2, 6: 4 }[ct];
+    const rowBytes = Math.ceil(4 * ch * d / 8);
+    const rawRows = [];
+    for (let y = 0; y < 4; y++) { rawRows.push(0); for (let b = 0; b < rowBytes; b++) rawRows.push(0x5A); }
+    try { decodePNG(mkPNG(4, 4, d, +ct, zlib.deflateSync(Buffer.from(rawRows)))); okPairs++; }
+    catch (e) { badPairs.push(`ct${ct}/d${d}: ${e.message}`); }
+  }
+  t("all legal depth+colourtype pairs still decode", badPairs.length === 0, badPairs.join("; "));
+}
+
+/* the inflater must never hang or silently succeed on garbage */
+{
+  const crypto = require("crypto");
+  let returned = 0, slow = 0;
+  for (let i = 0; i < 600; i++) {
+    const buf = new Uint8Array(crypto.randomBytes(1 + Math.floor(Math.random() * 300)));
+    const s0 = Date.now();
+    try { zlibInflate(buf); returned++; } catch (e) { /* expected */ }
+    if (Date.now() - s0 > 1000) slow++;
+  }
+  t("600 random buffers never hang the inflater", slow === 0, slow + " slow");
+  t("random bytes are not mistaken for valid zlib", returned <= 2, returned + " decoded");
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

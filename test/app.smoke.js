@@ -246,6 +246,70 @@ win.renderGuides();
 t("guides rendered (2 lines + 2 hit areas)", win.document.querySelectorAll("#guides > line").length === 4,
   win.document.querySelectorAll("#guides > line").length);
 
+
+/* ---- opening project files: malformed input must never wedge the editor ----
+ * Regression: openProjectFile() assigned into App BEFORE validating, so a bad
+ * file left a half-loaded document behind; and it only restored doc.guides, so
+ * a file without doc.grid made render() throw on every subsequent frame. */
+console.log("\n— opening project files —");
+function openJSON(payload) {
+  const text = typeof payload === "string" ? payload : JSON.stringify(payload);
+  const orig = win.FileReader;
+  win.FileReader = function () {
+    this.readAsText = () => { this.result = text; if (this.onload) this.onload(); };
+  };
+  const alerts = [];
+  const origAlert = win.alert;
+  win.alert = m => alerts.push(String(m));
+  try { win.openProjectFile({}); }
+  finally { win.FileReader = orig; win.alert = origAlert; }
+  return alerts;
+}
+function docHealthy() {
+  const d = A.doc;
+  return !!d && Number.isFinite(d.w) && d.w > 0 && Number.isFinite(d.h) && d.h > 0
+    && !!d.grid && typeof d.grid.show === "boolean" && Number.isFinite(d.grid.size)
+    && !!d.guides && Array.isArray(d.guides.h) && Array.isArray(d.guides.v);
+}
+function survives(label, payload, expectAlert) {
+  const alerts = openJSON(payload);
+  let broke = "";
+  try { win.render(); win.updateUI(); } catch (e) { broke = "render: " + e.message; }
+  /* this suite loads only the core modules; PDF export is covered in pdf.test.js */
+  if (typeof win.buildPDF === "function") { try { win.buildPDF({}); } catch (e) { broke += " pdf: " + e.message; } }
+  t(label, !broke && docHealthy() && (expectAlert ? alerts.length > 0 : true),
+    broke || (docHealthy() ? "alerts=" + alerts.length : "doc left unhealthy"));
+}
+
+survives("valid project opens", { doc: { w: 640, h: 480, grid: { show: true, snap: false, size: 25 }, guides: { h: [5], v: [6] } }, objects: [{ id: "a", type: "rect", x: 3, y: 4, w: 50, h: 60 }] }, false);
+survives("project without doc.grid still renders", { doc: { w: 600, h: 400 }, objects: [{ id: "a", type: "rect", x: 0, y: 0, w: 10, h: 10 }] }, false);
+survives("nulls in the objects array are dropped", { doc: { w: 600, h: 400 }, objects: [null, null, { id: "a", type: "rect", x: 1, y: 1, w: 5, h: 5 }] }, false);
+survives("objects without a type are dropped", { doc: { w: 600, h: 400 }, objects: [{ id: "x" }, { id: "y", type: "ellipse", x: 0, y: 0, w: 9, h: 9 }] }, false);
+survives("non-object doc is replaced with defaults", { doc: 42, objects: [{ id: "a", type: "rect", x: 0, y: 0, w: 10, h: 10 }] }, false);
+survives("NaN geometry is neutralised", { doc: { w: NaN, h: -5 }, objects: [{ id: "a", type: "rect", x: NaN, y: 0, w: 10, h: 10 }] }, false);
+survives("garbage json is rejected with a message", "{ this is not json", true);
+survives("a file with no objects is rejected", { doc: { w: 600, h: 400 }, objects: "not an array" }, true);
+
+{
+  /* the editor must still be usable after a rejected file */
+  A.objects = [win.makeRect(5, 5, 20, 20)];
+  const n = A.objects.length;
+  openJSON("{ broken");
+  t("a rejected file leaves the current document intact", A.objects.length === n, A.objects.length);
+}
+
+{
+  /* save -> reopen must be lossless */
+  openJSON({ doc: { w: 640, h: 480, grid: { show: true, snap: false, size: 25 }, guides: { h: [5], v: [6] } },
+             objects: [{ id: "a", type: "rect", x: 3, y: 4, w: 50, h: 60 }] });
+  const snap = JSON.stringify({ w: A.doc.w, h: A.doc.h, grid: A.doc.grid, guides: A.doc.guides, n: A.objects.length });
+  const saved = JSON.parse(JSON.stringify({ app: "graphene", version: 3, doc: A.doc, objects: A.objects, idSeq: A.idSeq, pages: A.pages, pageIndex: A.pageIndex }));
+  openJSON(saved);
+  const again = JSON.stringify({ w: A.doc.w, h: A.doc.h, grid: A.doc.grid, guides: A.doc.guides, n: A.objects.length });
+  t("save -> reopen round trip is lossless", snap === again, snap + " vs " + again);
+}
+
+
 console.log("\n— runtime errors during the whole run —");
 t("no uncaught errors", errors.length === 0, errors.join(" | "));
 

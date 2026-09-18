@@ -11,7 +11,8 @@
     "dist:win": "electron-builder --win",
     "dist:mac": "electron-builder --mac",
     "dist:linux": "electron-builder --linux",
-    "test": "node test/run.js"
+    "test": "node test/run.js",
+    "test:nodom": "GRAPHENE_SKIP_DOM=1 node test/run.js"
   },
   "build": {
     "appId": "app.graphene.studio",
@@ -48,8 +49,10 @@
     }
   },
   "devDependencies": {
-    "electron": "^31.0.0",
-    "electron-builder": "^24.13.0",
     "jsdom": "^24.0.0"
+  },
+  "optionalDependencies": {
+    "electron": "^31.0.0",
+    "electron-builder": "^24.13.0"
   }
 }

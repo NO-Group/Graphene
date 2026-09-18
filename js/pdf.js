@@ -22,7 +22,11 @@ function rgbToCmyk01(hex) {
   return [(1 - r - k) / (1 - k), (1 - g - k) / (1 - k), (1 - b - k) / (1 - k), k];
 }
 const f3 = v => {
-  if (!isFinite(v)) v = 0;
+  /* Number.isFinite, not the global isFinite: the global coerces, so null and
+     "" pass as finite and then blow up on .toFixed. A malformed project file
+     must never be able to produce a corrupt PDF. */
+  if (typeof v !== "number" || !Number.isFinite(v)) v = Number(v);
+  if (!Number.isFinite(v)) v = 0;
   const s = v.toFixed(3);
   return s.replace(/\.?0+$/, "") || "0";
 };
