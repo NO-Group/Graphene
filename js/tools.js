@@ -151,6 +151,7 @@ function onPointerUp(e) {
   if (!drag) return;
   const d = drag; drag = null;
   stage.classList.remove("panning");
+  if (typeof clearDimensions === "function") clearDimensions();
 
   switch (d.mode) {
     case "move":
@@ -286,6 +287,7 @@ function moveDrag(e, w) {
   });
   render();
   drawSmartGuides(smartLines);
+  if (typeof drawDimensions === "function") drawDimensions(selectionBBox());
   syncTransformInputs();
 }
 
@@ -345,6 +347,7 @@ function resizeDrag(e, w) {
     Object.assign(o, cp);
   });
   render(); syncTransformInputs();
+  if (typeof drawDimensions === "function") drawDimensions(selectionBBox());
 }
 
 function rotateDrag(e, w) {

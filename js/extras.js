@@ -140,6 +140,14 @@ stage.addEventListener("contextmenu", e => {
     has ? `<button data-cmd="to-path">Convert to Path <kbd>Ctrl+Shift+C</kbd></button>` : "",
     multi ? `<button data-cmd="combine">Combine Paths <kbd>Ctrl+L</kbd></button>` : "",
     one && one.type === "path" ? `<button data-cmd="break-apart">Break Apart <kbd>Ctrl+K</kbd></button>` : "",
+    multi ? `<hr>` : "",
+    multi ? `<button data-cmd="shape-weld">Weld <kbd>Ctrl+W</kbd></button>` : "",
+    multi ? `<button data-cmd="shape-trim">Trim</button>` : "",
+    multi ? `<button data-cmd="shape-intersect">Intersect</button>` : "",
+    multi ? `<button data-cmd="shape-exclude">Exclude</button>` : "",
+    multi ? `<button data-cmd="powerclip">PowerClip Inside</button>` : "",
+    one && one.type === "group" && one.clipWith ? `<button data-cmd="release-clip">Release PowerClip</button>` : "",
+    has ? `<hr>` : "",
     has ? `<button data-cmd="lock">Lock <kbd>Ctrl+2</kbd></button>` : "",
     `<hr>`,
     `<button data-cmd="paste-here" data-x="${e.clientX}" data-y="${e.clientY}" ${App.clipboard ? "" : "disabled"}>Paste Here</button>`,
@@ -528,14 +536,7 @@ function breakApart() {
   render(); updateUI();
 }
 
-/* multi-subpath rendering support: extend pathD via renderObj hook */
-const _origPathD = pathD;
-window.pathD = function (o) {
-  if (o.subpaths && o.subpaths.length) {
-    return o.subpaths.map(sp => _origPathD({ pts: sp.pts, closed: sp.closed })).join(" ");
-  }
-  return _origPathD(o);
-};
+/* multi-subpath rendering is handled natively by pathD() in core.js */
 
 /* ============================================================
    Lock helpers

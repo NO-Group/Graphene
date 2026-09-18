@@ -112,10 +112,29 @@ function renderObj(o) {
       el.setAttribute("font-size", o.size);
       if (o.bold) el.setAttribute("font-weight", "bold");
       if (o.italic) el.setAttribute("font-style", "italic");
+      if (o.letterSpacing) el.setAttribute("letter-spacing", o.letterSpacing);
       el.setAttribute("text-anchor", o.align === "center" ? "middle" : o.align === "right" ? "end" : "start");
+
+      /* text fitted to a path */
+      if (o.onPath && typeof ensureTextPathDef === "function") {
+        const pid = ensureTextPathDef(o);
+        if (pid) {
+          el.removeAttribute("x"); el.removeAttribute("y");
+          const tp = document.createElementNS(SVGNS, "textPath");
+          tp.setAttribute("href", `#${pid}`);
+          tp.setAttributeNS("http://www.w3.org/1999/xlink", "href", `#${pid}`);
+          tp.setAttribute("startOffset", (o.pathOffset || 0) + "%");
+          if (o.pathSide === "below") tp.setAttribute("side", "right");
+          tp.setAttribute("dominant-baseline", o.pathSide === "below" ? "hanging" : "auto");
+          tp.textContent = (o.text || "").replace(/\n/g, " ");
+          el.appendChild(tp);
+          break;
+        }
+      }
+
       const lines = (o.text || "").split("\n");
       lines.forEach((ln, i) => {
-        const ts = svgEl("tspan", { x: o.x, dy: i === 0 ? 0 : o.size * 1.2 });
+        const ts = svgEl("tspan", { x: o.x, dy: i === 0 ? 0 : o.size * (o.lineHeight || 1.2) });
         ts.textContent = ln || "\u00A0";
         el.appendChild(ts);
       });
@@ -131,6 +150,11 @@ function renderObj(o) {
       const gf = ensureFilter(o);
       if (gf) el.setAttribute("filter", gf);
       for (const c of o.children) { const ce = renderObj(c); if (ce) el.appendChild(ce); }
+      /* PowerClip: clip the group's contents to a container shape */
+      if (o.clipWith && typeof ensureClipDef === "function") {
+        const cid = ensureClipDef(o);
+        if (cid) el.setAttribute("clip-path", `url(#${cid})`);
+      }
       break;
     }
     default: return null;
@@ -160,8 +184,11 @@ function render() {
 
   // objects
   gObjects.innerHTML = "";
-  // prune stale gradients
-  $$("#defs > *").forEach(g => { const id = g.id.replace(/^grad-/, ""); if (!findObj(id)) g.remove(); });
+  // prune defs whose owning object no longer exists
+  $$("#defs > *").forEach(g => {
+    const m = /^(grad|fx|tp|clip)-(.+)$/.exec(g.id || "");
+    if (m && !findObj(m[2])) g.remove();
+  });
   for (const o of App.objects) { const el = renderObj(o); if (el) gObjects.appendChild(el); }
 
   renderOverlay();

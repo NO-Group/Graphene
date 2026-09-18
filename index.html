@@ -64,8 +64,50 @@
         <button data-cmd="combine">Combine Paths <kbd>Ctrl+L</kbd></button>
         <button data-cmd="break-apart">Break Apart <kbd>Ctrl+K</kbd></button>
         <hr>
+        <button data-cmd="powerclip">PowerClip Inside</button>
+        <button data-cmd="release-clip">Release PowerClip</button>
+        <hr>
         <button data-cmd="lock">Lock <kbd>Ctrl+2</kbd></button>
         <button data-cmd="unlock-all">Unlock All</button>
+      </div>
+    </div>
+
+    <div class="menu" data-menu>
+      <button class="menu-title">Shaping</button>
+      <div class="dropdown">
+        <button data-cmd="shape-weld">Weld <kbd>Ctrl+W</kbd></button>
+        <button data-cmd="shape-trim">Trim</button>
+        <button data-cmd="shape-intersect">Intersect</button>
+        <button data-cmd="shape-exclude">Exclude (XOR)</button>
+        <hr>
+        <button data-cmd="shape-fmb">Front Minus Back</button>
+        <button data-cmd="shape-bmf">Back Minus Front</button>
+        <button data-cmd="shape-simplify">Simplify</button>
+        <button data-cmd="shape-boundary">Create Boundary</button>
+      </div>
+    </div>
+
+    <div class="menu" data-menu>
+      <button class="menu-title">Text</button>
+      <div class="dropdown">
+        <button data-cmd="text-on-path">Fit Text to Path</button>
+        <button data-cmd="text-off-path">Detach Text from Path</button>
+      </div>
+    </div>
+
+    <div class="menu" data-menu>
+      <button class="menu-title">Page</button>
+      <div class="dropdown">
+        <button data-cmd="page-add">Add Page</button>
+        <button data-cmd="page-dup">Duplicate Page</button>
+        <button data-cmd="page-rename">Rename Page…</button>
+        <button data-cmd="page-delete">Delete Page</button>
+        <hr>
+        <button data-cmd="preset-a4">Preset: A4 (794×1123)</button>
+        <button data-cmd="preset-letter">Preset: US Letter (816×1056)</button>
+        <button data-cmd="preset-square">Preset: Square 1080</button>
+        <button data-cmd="preset-hd">Preset: 1920×1080</button>
+        <button data-cmd="preset-card">Preset: Business Card</button>
       </div>
     </div>
     <div class="menu" data-menu>
@@ -81,6 +123,9 @@
         <button data-cmd="toggle-rulers">Toggle Rulers <kbd>Ctrl+R</kbd></button>
         <button data-cmd="toggle-smart">Toggle Smart Guides</button>
         <button data-cmd="clear-guides">Clear Guides</button>
+        <hr>
+        <button data-cmd="toggle-outline">Wireframe / Outline View <kbd>Ctrl+Y</kbd></button>
+        <button data-cmd="toggle-palette">Show / Hide Colour Palette</button>
       </div>
     </div>
     <div class="menu" data-menu>
@@ -123,6 +168,7 @@
       </g>
     </svg>
     <div id="text-editor-holder"></div>
+    <div id="pagebar"></div>
   </div>
 
   <aside id="panel">
@@ -243,6 +289,66 @@
         </div>
       </div>
 
+      <div class="prop-section" id="props-color">
+        <h3>Colour</h3>
+        <div class="row">
+          <label class="grow">Hex <input type="text" id="in-hex" maxlength="7" spellcheck="false"></label>
+        </div>
+        <div class="row cmyk-row">
+          <label>C <input type="number" id="in-c" min="0" max="100"></label>
+          <label>M <input type="number" id="in-m" min="0" max="100"></label>
+          <label>Y <input type="number" id="in-y" min="0" max="100"></label>
+          <label>K <input type="number" id="in-k" min="0" max="100"></label>
+        </div>
+        <div class="row cmyk-row">
+          <label>H <input type="number" id="in-hh" min="0" max="360"></label>
+          <label>S <input type="number" id="in-ss" min="0" max="100"></label>
+          <label>B <input type="number" id="in-bb" min="0" max="100"></label>
+        </div>
+      </div>
+
+      <div class="prop-section" id="props-shaping">
+        <h3>Shaping</h3>
+        <div class="row btn-row wrap">
+          <button data-cmd="shape-weld" title="Weld — merge into one outline">Weld</button>
+          <button data-cmd="shape-trim" title="Trim — front object cuts the ones behind">Trim</button>
+          <button data-cmd="shape-intersect" title="Intersect — keep only the overlap">Intersect</button>
+          <button data-cmd="shape-exclude" title="Exclude — remove the overlap">Exclude</button>
+          <button data-cmd="shape-fmb" title="Front minus back">Front−Back</button>
+          <button data-cmd="shape-bmf" title="Back minus front">Back−Front</button>
+          <button data-cmd="shape-simplify" title="Remove hidden overlapped areas">Simplify</button>
+          <button data-cmd="shape-boundary" title="Create an outline around everything selected">Boundary</button>
+        </div>
+      </div>
+
+      <div class="prop-section" id="props-contour">
+        <h3>Contour &amp; Blend</h3>
+        <div class="row">
+          <label>Steps <input type="number" id="in-contour-steps" min="1" max="20" value="3"></label>
+          <label>Offset <input type="number" id="in-contour-gap" min="0.5" max="200" step="0.5" value="8"></label>
+        </div>
+        <div class="row btn-row">
+          <button id="btn-contour-out">Contour Outside</button>
+          <button id="btn-contour-in">Contour Inside</button>
+        </div>
+        <div class="row">
+          <label>Blend steps <input type="number" id="in-blend-steps" min="1" max="60" value="6"></label>
+          <button id="btn-blend">Blend</button>
+        </div>
+      </div>
+
+      <div class="prop-section" id="props-textpath">
+        <h3>Text on Path</h3>
+        <div class="row"><label class="grow slider-label">Offset <input type="range" id="in-path-offset" min="0" max="100" value="0"><span id="path-offset-val">0%</span></label></div>
+        <div class="row">
+          <select id="in-path-side" class="grow">
+            <option value="above">Above path</option>
+            <option value="below">Below path</option>
+          </select>
+          <button class="mini-btn" data-cmd="text-off-path" title="Detach from path">✕</button>
+        </div>
+      </div>
+
       <div class="prop-section" id="props-effects">
         <h3>Effects</h3>
         <div class="row">
@@ -264,6 +370,10 @@
       <ul id="layers"></ul>
     </div>
   </aside>
+</div>
+
+<div id="palette-bar">
+  <div id="palette"></div>
 </div>
 
 <footer id="statusbar">
@@ -306,6 +416,10 @@
       <b>Ctrl+2</b><span>Lock selection</span>
       <b>Right-click</b><span>Context menu</span>
       <b>Drag &amp; drop / Ctrl+V</b><span>Import images (PNG, JPG, SVG) onto the canvas</span>
+      <b>Ctrl+W</b><span>Weld selected shapes (boolean union)</span>
+      <b>Ctrl+Y</b><span>Wireframe / outline view</span>
+      <b>Alt+click +</b><span>Duplicate the current page</span>
+      <b>Palette click</b><span>Set fill · Shift+click sets stroke</span>
     </div>
     <button id="modal-close">Close</button>
   </div>
@@ -313,9 +427,11 @@
 
 <script src="js/core.js"></script>
 <script src="js/render.js"></script>
+<script src="js/boolean.js"></script>
 <script src="js/tools.js"></script>
 <script src="js/ui.js"></script>
 <script src="js/extras.js"></script>
+<script src="js/pro.js"></script>
 <script>
 if ("serviceWorker" in navigator && location.protocol !== "file:") {
   navigator.serviceWorker.register("sw.js").catch(() => {});

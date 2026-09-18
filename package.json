@@ -1,8 +1,8 @@
 {
   "name": "graphene-studio",
   "productName": "Graphene",
-  "version": "1.0.0",
-  "description": "Professional vector graphics editor — runs in any browser, installs as a PWA, or packages as a native desktop app.",
+  "version": "3.0.0",
+  "description": "Professional vector graphics editor \u2014 runs in any browser, installs as a PWA, or packages as a native desktop app.",
   "main": "desktop/main.js",
   "scripts": {
     "start": "python3 -m http.server 8000",
@@ -10,20 +10,46 @@
     "dist": "electron-builder --win --mac --linux",
     "dist:win": "electron-builder --win",
     "dist:mac": "electron-builder --mac",
-    "dist:linux": "electron-builder --linux"
+    "dist:linux": "electron-builder --linux",
+    "test": "node test/run.js"
   },
   "build": {
     "appId": "app.graphene.studio",
     "files": [
-      "index.html", "manifest.json", "sw.js",
-      "css/**/*", "js/**/*", "icons/**/*", "desktop/**/*"
+      "index.html",
+      "manifest.json",
+      "sw.js",
+      "css/**/*",
+      "js/**/*",
+      "icons/**/*",
+      "desktop/**/*"
     ],
-    "win": { "target": ["nsis", "portable"], "icon": "icons/icon-512.png" },
-    "mac": { "target": ["dmg"], "icon": "icons/icon-512.png", "category": "public.app-category.graphics-design" },
-    "linux": { "target": ["AppImage", "deb"], "icon": "icons/icon-512.png", "category": "Graphics" }
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ],
+      "icon": "icons/icon-512.png"
+    },
+    "mac": {
+      "target": [
+        "dmg"
+      ],
+      "icon": "icons/icon-512.png",
+      "category": "public.app-category.graphics-design"
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "icon": "icons/icon-512.png",
+      "category": "Graphics"
+    }
   },
   "devDependencies": {
     "electron": "^31.0.0",
-    "electron-builder": "^24.13.0"
+    "electron-builder": "^24.13.0",
+    "jsdom": "^24.0.0"
   }
 }

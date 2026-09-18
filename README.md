@@ -47,7 +47,44 @@ npm run dist:linux     # build AppImage + .deb
 - Strokes with width, color, solid/dashed/dotted styles
 - Per-object opacity
 
+**Boolean shaping engine** (the CorelDRAW *Shaping* docker, done properly)
+- **Weld · Trim · Intersect · Exclude · Front−Back · Back−Front · Simplify ·
+  Create Boundary** — all eight operations
+- Backed by an exact **Martinez–Rueda–Feito polygon clipper** written from
+  scratch: handles holes, self-intersections, collinear/shared edges, and
+  multi-contour inputs. Beziers are adaptively flattened, results come back as
+  editable multi-subpath paths with correct even-odd holes
+- Verified by 20 unit tests against analytically-known areas (circle–circle lens
+  area within 0.3% using 64-gon approximation)
+
+**Effects & composition**
+- **Contour** — inner/outer offset rings with miter-clamped normals and
+  automatic colour fade (1–20 steps)
+- **Blend** — morph one shape into another across N steps, with arc-length
+  resampling and best-rotation matching so shapes don't twist
+- **PowerClip** — place any objects inside a container shape (real SVG clip
+  paths), release at any time
+- Drop shadow and gaussian blur per object, exported into SVG/PNG
+
+**Text**
+- **Text on a path** — fit text to any curve, adjust offset along the path and
+  flip it above/below
+- In-place editing, multi-line, 9 font families, bold/italic/align
+
+**Documents**
+- **Multi-page documents** with tabs, add/duplicate/rename/delete, PageUp/PageDown
+- Page presets: A4, US Letter, Square 1080, 1920×1080, business card
+- **Auto-save & crash recovery** — work is snapshotted to local storage and
+  offered back after an unexpected close
+
+**Colour**
+- Bottom palette bar: 36 curated swatches, click = fill, Shift+click = stroke,
+  plus save-your-own swatches persisted locally
+- **CMYK** and **HSB** numeric entry alongside hex, with live conversion
+
 **Pro workspace**
+- Wireframe / outline view (Ctrl+Y)
+- Live dimension readout while moving and resizing
 - Rulers with adaptive tick scale (Ctrl+R) — drag from a ruler to create guides,
   drag guides off-canvas to delete
 - Smart alignment guides: objects snap to other objects' edges/centers, page
@@ -88,11 +125,44 @@ Press `?` in the app for the full shortcut list.
 | `js/tools.js` | Pointer state machine for all tools: select/transform, pen, pencil (RDP + Catmull-Rom smoothing), node editing, text editing |
 | `js/ui.js` | Toolbar, menus, properties panel, layers panel, keyboard shortcuts, file IO & export |
 | `js/extras.js` | Rulers & guides, smart-guide snapping targets, context menu, image/SVG import (incl. a path-`d` parser), combine/break-apart, lock tools |
+| `js/boolean.js` | Martinez–Rueda–Feito polygon clipper (sweep line, event queue, contour reconstruction) + the eight shaping commands |
+| `js/pro.js` | Multi-page documents, CMYK/HSB colour, palette, text-on-path, contour, blend, PowerClip, auto-save recovery, dimension readout |
 | `sw.js` + `manifest.json` | Offline service worker + PWA install manifest |
 | `desktop/main.js` + `package.json` | Electron shell + electron-builder config for native Windows/macOS/Linux builds |
+| `test/` | 74 automated tests — boolean geometry, headless app smoke tests, simulated pointer interaction |
+
+## Tests
+
+```bash
+npm install     # jsdom, for the headless DOM tests
+npm test
+```
+
+- `test/boolean.test.js` — 20 geometry assertions against known-exact areas
+- `test/app.smoke.js` — boots the real `index.html` in jsdom and exercises
+  shaping, pages, colour models, contour, blend, PowerClip, text-on-path,
+  undo/redo, export and rendering
+- `test/interaction.test.js` — dispatches real pointer/keyboard events to draw,
+  drag, marquee-select, duplicate, delete and undo
 
 The editor itself is vanilla ES2020 + SVG — no frameworks, no build step, and
 the same codebase powers the browser, PWA, and desktop versions.
+
+## Compared to CorelDRAW
+
+| | CorelDRAW | Graphene |
+|---|---|---|
+| Boolean shaping | Weld/Trim/Intersect/Simplify/Boundary | All of them, exact clipper, 20 unit tests |
+| Contour & Blend | Yes | Yes |
+| PowerClip | Yes | Yes |
+| Text on path | Yes | Yes |
+| Multi-page | Yes | Yes |
+| CMYK entry | Yes | Yes |
+| Price | Subscription / ~$549 | Free |
+| Install size | ~4 GB | ~250 KB |
+| Platforms | Windows (+ limited Mac) | Any browser, PWA, Windows, macOS, Linux |
+| Offline | Yes | Yes (service worker) |
+| Startup | Tens of seconds | Instant |
 
 > "Who builds a serious app with HTML?" — Figma, Canva, Photoshop Web, and
 > VS Code, among others. The trick is doing it properly.

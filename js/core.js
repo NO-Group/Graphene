@@ -307,9 +307,9 @@ function polygonPoints(o) {
   return pts;
 }
 
-function pathD(o) {
-  const pts = o.pts;
-  if (!pts.length) return "";
+/* one subpath (anchor list) → "M … C … Z" */
+function subpathD(pts, closed) {
+  if (!pts || !pts.length) return "";
   let d = `M ${round2(pts[0].x)} ${round2(pts[0].y)}`;
   const seg = (a, b) => {
     const c1 = a.hout || a, c2 = b.hin || b;
@@ -317,28 +317,47 @@ function pathD(o) {
     return ` C ${round2(c1.x)} ${round2(c1.y)} ${round2(c2.x)} ${round2(c2.y)} ${round2(b.x)} ${round2(b.y)}`;
   };
   for (let i = 1; i < pts.length; i++) d += seg(pts[i - 1], pts[i]);
-  if (o.closed && pts.length > 1) d += seg(pts[pts.length - 1], pts[0]) + " Z";
+  if (closed && pts.length > 1) d += seg(pts[pts.length - 1], pts[0]) + " Z";
   return d;
+}
+
+/* full object path data — supports multi-subpath (combined) paths natively */
+function pathD(o) {
+  if (o.subpaths && o.subpaths.length) {
+    return o.subpaths.map(sp => subpathD(sp.pts, sp.closed !== false)).join(" ");
+  }
+  return subpathD(o.pts, o.closed);
 }
 
 function cap(s) { return s.charAt(0).toUpperCase() + s.slice(1); }
 
 /* ---------- history ---------- */
 function snapshot() {
-  return JSON.stringify({ doc: App.doc, objects: App.objects, idSeq: App.idSeq });
+  if (App.pages && App.pages[App.pageIndex]) {
+    App.pages[App.pageIndex].objects = App.objects;
+    App.pages[App.pageIndex].guides = App.doc.guides;
+  }
+  return JSON.stringify({
+    doc: App.doc, objects: App.objects, idSeq: App.idSeq,
+    pages: App.pages, pageIndex: App.pageIndex
+  });
 }
 function commit(label) {
   App.history = App.history.slice(0, App.histIndex + 1);
   App.history.push({ label: label || "", data: snapshot() });
   if (App.history.length > App.HIST_MAX) App.history.shift();
   App.histIndex = App.history.length - 1;
+  if (typeof scheduleAutosave === "function") scheduleAutosave();
 }
 function restore(entry) {
   const s = JSON.parse(entry.data);
   App.doc = s.doc; App.objects = s.objects; App.idSeq = s.idSeq;
+  if (s.pages) { App.pages = s.pages; App.pageIndex = s.pageIndex || 0; }
+  if (App.pages && App.pages[App.pageIndex]) App.pages[App.pageIndex].objects = App.objects;
   App.selection = App.selection.filter(id => findTop(id));
   if (App.nodeEdit.id && !findTop(App.nodeEdit.id)) { App.nodeEdit.id = null; App.nodeEdit.sel = []; }
   render(); updateUI();
+  if (typeof renderPageBar === "function") renderPageBar();
 }
 function undo() { if (App.histIndex > 0) { App.histIndex--; restore(App.history[App.histIndex]); } }
 function redo() { if (App.histIndex < App.history.length - 1) { App.histIndex++; restore(App.history[App.histIndex]); } }

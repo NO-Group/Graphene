@@ -76,6 +76,46 @@ function runCommand(cmd) {
     case "break-apart": breakApart(); break;
     case "lock": lockSelection(); break;
     case "unlock-all": unlockAll(); break;
+
+    /* --- boolean shaping --- */
+    case "shape-weld": shapeOp("weld"); break;
+    case "shape-trim": shapeOp("trim"); break;
+    case "shape-intersect": shapeOp("intersect"); break;
+    case "shape-exclude": shapeOp("exclude"); break;
+    case "shape-fmb": shapeOp("fmb"); break;
+    case "shape-bmf": shapeOp("bmf"); break;
+    case "shape-simplify": shapeOp("simplify"); break;
+    case "shape-boundary": shapeOp("boundary"); break;
+
+    /* --- powerclip --- */
+    case "powerclip": powerClip(); break;
+    case "release-clip": releaseClip(); break;
+
+    /* --- text on path --- */
+    case "text-on-path": attachTextToPath(); break;
+    case "text-off-path": detachTextFromPath(); break;
+
+    /* --- pages --- */
+    case "page-add": addPage(false); break;
+    case "page-dup": addPage(true); break;
+    case "page-rename": renamePage(); break;
+    case "page-delete": deletePage(); break;
+
+    /* --- page presets --- */
+    case "preset-a4": setPageSize(794, 1123); break;
+    case "preset-letter": setPageSize(816, 1056); break;
+    case "preset-square": setPageSize(1080, 1080); break;
+    case "preset-hd": setPageSize(1920, 1080); break;
+    case "preset-card": setPageSize(1050, 600); break;
+
+    /* --- view --- */
+    case "toggle-outline":
+      document.body.classList.toggle("outline-view");
+      setHint("Wireframe view " + (document.body.classList.contains("outline-view") ? "on" : "off"));
+      break;
+    case "toggle-palette":
+      document.body.classList.toggle("palette-off");
+      break;
     case "toggle-rulers": setRulers(!App.rulers); break;
     case "toggle-smart": App.smartGuides = !App.smartGuides; setHint("Smart guides " + (App.smartGuides ? "on" : "off")); break;
     case "clear-guides": App.doc.guides = { h: [], v: [] }; commit("clear guides"); render(); break;
@@ -91,6 +131,13 @@ function runCommand(cmd) {
 function stageCenter() {
   const r = stage.getBoundingClientRect();
   return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+}
+
+function setPageSize(w, h) {
+  App.doc.w = w; App.doc.h = h;
+  commit("page size");
+  render(); syncDocInputs(); zoomFit();
+  setHint(`Page set to ${w} × ${h}`);
 }
 
 function applyToSelection(fn, label) {
@@ -287,6 +334,16 @@ function updateUI() {
   show("#props-fill", paintable);
   show("#props-stroke", paintable);
   show("#props-effects", objs.length > 0);
+  show("#props-color", true);
+  show("#props-shaping", objs.length > 1);
+  show("#props-contour", objs.length > 0);
+  show("#props-textpath", !!(one && one.type === "text" && one.onPath));
+  if (one && one.type === "text" && one.onPath) {
+    const po = $("#in-path-offset"), pv = $("#path-offset-val"), ps = $("#in-path-side");
+    if (po) po.value = one.pathOffset || 0;
+    if (pv) pv.textContent = (one.pathOffset || 0) + "%";
+    if (ps) ps.value = one.pathSide || "above";
+  }
 
   syncDocInputs();
   syncTransformInputs();
@@ -336,6 +393,7 @@ function updateUI() {
 
   renderLayers();
   updateHistButtons();
+  if (typeof syncColorModel === "function") syncColorModel();
   uiSyncing = false;
 }
 
@@ -602,6 +660,10 @@ window.addEventListener("keydown", e => {
     if (k === "k") { e.preventDefault(); breakApart(); return; }
     if (k === "r") { e.preventDefault(); setRulers(!App.rulers); return; }
     if (k === "2") { e.preventDefault(); lockSelection(); return; }
+    if (k === "w") { e.preventDefault(); shapeOp("weld"); return; }
+    if (k === "y") { e.preventDefault(); runCommand("toggle-outline"); return; }
+    if (e.key === "PageDown") { e.preventDefault(); gotoPage(App.pageIndex + 1); return; }
+    if (e.key === "PageUp") { e.preventDefault(); gotoPage(App.pageIndex - 1); return; }
     return;
   }
 
@@ -664,13 +726,21 @@ function newDocument() {
   if (App.objects.length && !confirm("Start a new document? Unsaved changes will be lost.")) return;
   App.objects = []; App.selection = []; App.nodeEdit = { id: null, sel: [] };
   App.doc = { w: 1200, h: 800, bg: "#ffffff", grid: { show: false, snap: false, size: 20 }, guides: { h: [], v: [] } };
+  App.pages = [{ name: "Page 1", objects: App.objects, guides: App.doc.guides }];
+  App.pageIndex = 0;
   App.history = []; App.histIndex = -1;
   commit("new");
   zoomFit(); updateUI();
+  if (typeof renderPageBar === "function") renderPageBar();
 }
 
 function saveProject() {
-  const data = JSON.stringify({ app: "graphene", version: 1, doc: App.doc, objects: App.objects, idSeq: App.idSeq }, null, 1);
+  if (typeof syncActivePage === "function") syncActivePage();
+  const data = JSON.stringify({
+    app: "graphene", version: 3,
+    doc: App.doc, objects: App.objects, idSeq: App.idSeq,
+    pages: App.pages, pageIndex: App.pageIndex
+  }, null, 1);
   download(new Blob([data], { type: "application/json" }), "design.graphene.json");
   setHint("Project saved ✓");
 }
@@ -686,10 +756,20 @@ $("#file-open").addEventListener("change", e => {
       App.doc = s.doc;
       if (!App.doc.guides) App.doc.guides = { h: [], v: [] };
       App.objects = s.objects; App.idSeq = s.idSeq || 1000;
+      if (s.pages && s.pages.length) {
+        App.pages = s.pages;
+        App.pageIndex = clamp(s.pageIndex || 0, 0, s.pages.length - 1);
+        App.objects = App.pages[App.pageIndex].objects;
+        App.doc.guides = App.pages[App.pageIndex].guides || { h: [], v: [] };
+      } else {
+        App.pages = [{ name: "Page 1", objects: App.objects, guides: App.doc.guides }];
+        App.pageIndex = 0;
+      }
       App.selection = []; App.nodeEdit = { id: null, sel: [] };
       App.history = []; App.histIndex = -1;
       commit("open");
       zoomFit(); updateUI();
+      if (typeof renderPageBar === "function") renderPageBar();
       setHint("Project loaded ✓");
     } catch (err) { alert("Could not open file: not a valid Graphene project."); }
   };

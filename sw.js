@@ -1,14 +1,16 @@
 /* Graphene service worker — full offline support */
-const CACHE = "graphene-v2";
+const CACHE = "graphene-v3";
 const ASSETS = [
   "./",
   "./index.html",
   "./css/styles.css",
   "./js/core.js",
+  "./js/boolean.js",
   "./js/render.js",
   "./js/tools.js",
   "./js/ui.js",
   "./js/extras.js",
+  "./js/pro.js",
   "./manifest.json",
   "./icons/icon-192.png",
   "./icons/icon-512.png",
