@@ -843,8 +843,11 @@ $("#file-open").addEventListener("change", e => {
 });
 
 function buildExportSVG() {
+  /* No explicit xmlns here: svgEl() uses createElementNS, so the serializer
+     emits the namespace itself. Setting it again produced `xmlns="..."` twice,
+     which is a duplicate-attribute error for any strict XML parser. */
   const svg = svgEl("svg", {
-    xmlns: SVGNS, width: App.doc.w, height: App.doc.h,
+    width: App.doc.w, height: App.doc.h,
     viewBox: `0 0 ${App.doc.w} ${App.doc.h}`
   });
   const defs = svgEl("defs");
@@ -881,12 +884,21 @@ function exportPNG(scale) {
   const url = URL.createObjectURL(new Blob([str], { type: "image/svg+xml" }));
   const img = new Image();
   img.onload = () => {
-    const c = document.createElement("canvas");
-    c.width = App.doc.w * scale; c.height = App.doc.h * scale;
-    const ctx = c.getContext("2d");
-    ctx.drawImage(img, 0, 0, c.width, c.height);
-    URL.revokeObjectURL(url);
-    c.toBlob(b => { download(b, "design.png"); setHint("PNG exported ✓"); }, "image/png");
+    try {
+      const c = document.createElement("canvas");
+      c.width = Math.max(1, Math.round(App.doc.w * scale));
+      c.height = Math.max(1, Math.round(App.doc.h * scale));
+      const ctx = c.getContext("2d");
+      ctx.drawImage(img, 0, 0, c.width, c.height);
+      c.toBlob(b => {
+        if (!b) { alert("PNG export failed: the image was too large to rasterise."); return; }
+        download(b, "design.png"); setHint("PNG exported ✓");
+      }, "image/png");
+    } catch (e) {
+      alert("PNG export failed: " + e.message);
+    } finally {
+      URL.revokeObjectURL(url);          // always, even if drawImage threw
+    }
   };
   img.onerror = () => { URL.revokeObjectURL(url); alert("PNG export failed."); };
   img.src = url;
@@ -894,10 +906,11 @@ function exportPNG(scale) {
 
 function download(blob, name) {
   const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
+  const url = URL.createObjectURL(blob);
+  a.href = url;
   a.download = name;
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  try { a.click(); }
+  finally { setTimeout(() => URL.revokeObjectURL(url), 5000); }  // revoke even if click() throws
 }
 
 /* ---------- misc ---------- */

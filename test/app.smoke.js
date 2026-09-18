@@ -310,6 +310,45 @@ survives("a file with no objects is rejected", { doc: { w: 600, h: 400 }, object
 }
 
 
+
+/* ---- SVG export ---------------------------------------------------------
+ * The exported file must be valid XML. buildExportSVG() set xmlns explicitly on
+ * top of createElementNS, so every export carried a duplicate xmlns attribute
+ * and was rejected outright by strict parsers (Inkscape, browsers loading .svg
+ * as XML). Nothing covered this path before. */
+console.log("\n— SVG export —");
+{
+  A.pages = null;
+  A.objects = [win.makeRect(10, 10, 100, 80)];
+  const grad = win.makeEllipse(50, 50, 80, 60);
+  grad.fill = { type: "linear", color: "#7C5CFF", a: "#7C5CFF", b: "#39D2C0", angle: 45,
+                stops: [{ p: 0, c: "#7C5CFF" }, { p: 1, c: "#39D2C0" }] };
+  A.objects.push(grad);
+  A.objects.push(win.makeText(20, 150, 'Hello <svg> & "quotes"'));
+
+  const str = new win.XMLSerializer().serializeToString(win.buildExportSVG());
+  t("exports a non-trivial document", str.length > 200, str.length);
+  t("declares the svg namespace exactly once", (str.match(/xmlns=/g) || []).length === 1,
+    (str.match(/xmlns=/g) || []).length);
+  t("markup-ish text is escaped", str.includes("&amp;") && str.includes("&lt;"));
+
+  let xmlOK = false, xmlErr = "";
+  try {
+    const parsed = new JSDOM(str, { contentType: "image/svg+xml" });
+    const doc = parsed.window.document;
+    xmlOK = doc.documentElement.tagName === "svg" && !doc.querySelector("parsererror");
+    t("gradient definitions survive export", !!doc.querySelector("linearGradient"));
+    t("text content survives export", (doc.querySelector("text") || {}).textContent === 'Hello <svg> & "quotes"');
+  } catch (e) { xmlErr = e.message; }
+  t("exported SVG is well-formed XML", xmlOK, xmlErr);
+
+  const empty = new win.XMLSerializer().serializeToString((A.objects = [], win.buildExportSVG()));
+  let emptyOK = false;
+  try { emptyOK = new JSDOM(empty, { contentType: "image/svg+xml" }).window.document.documentElement.tagName === "svg"; }
+  catch (e) { emptyOK = false; }
+  t("an empty document still exports valid SVG", emptyOK);
+}
+
 console.log("\n— runtime errors during the whole run —");
 t("no uncaught errors", errors.length === 0, errors.join(" | "));
 
