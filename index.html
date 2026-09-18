@@ -29,6 +29,9 @@
         <button data-cmd="export-png">Export PNG (1×)</button>
         <button data-cmd="export-png2">Export PNG (2×)</button>
         <button data-cmd="export-png4">Export PNG (4×)</button>
+        <hr>
+        <button data-cmd="export-pdf">Export PDF (print/CMYK)…</button>
+        <button data-cmd="export-pdf-quick">Export PDF (quick)</button>
       </div>
     </div>
     <div class="menu" data-menu>
@@ -110,6 +113,8 @@
     <div class="menu" data-menu>
       <button class="menu-title">Text</button>
       <div class="dropdown">
+        <button data-cmd="text-to-curves">Convert Text to Curves</button>
+        <hr>
         <button data-cmd="text-on-path">Fit Text to Path</button>
         <button data-cmd="text-off-path">Detach Text from Path</button>
       </div>
@@ -295,6 +300,22 @@
         </div>
       </div>
 
+      <div class="prop-section" id="props-fountain">
+        <h3>Fountain Fill</h3>
+        <div id="grad-ramp-wrap">
+          <div id="grad-ramp" title="Double-click the ramp to add a stop"></div>
+          <div id="grad-handles"></div>
+        </div>
+        <div class="row">
+          <label>Stop <input type="color" id="in-stop-color"></label>
+          <label>Pos <input type="number" id="in-stop-pos" min="0" max="100"></label>
+          <button class="mini-btn" id="btn-grad-reverse" title="Reverse gradient">⇄</button>
+        </div>
+        <div class="row">
+          <select id="in-grad-preset" class="grow"><option value="">Presets…</option></select>
+        </div>
+      </div>
+
       <div class="prop-section" id="props-stroke">
         <h3>Stroke</h3>
         <div class="row">
@@ -434,6 +455,32 @@
 
 <div id="ctx-menu" hidden></div>
 
+<div id="pdf-modal" hidden>
+  <div id="trace-card">
+    <h2>Export PDF — print production</h2>
+    <p class="dim">Real vector PDF with selectable text and scalable curves.</p>
+    <div class="trace-row">
+      <label>Colour</label>
+      <select id="pdf-cs">
+        <option value="cmyk">CMYK (print)</option>
+        <option value="rgb">RGB (screen)</option>
+      </select>
+    </div>
+    <div class="trace-row">
+      <label>Bleed (pt)</label>
+      <input type="number" id="pdf-bleed" min="0" max="72" step="1" value="0" style="flex:1">
+    </div>
+    <div class="trace-row">
+      <label class="chk"><input type="checkbox" id="pdf-marks"> Crop marks</label>
+      <label class="chk"><input type="checkbox" id="pdf-allpages" checked> All pages</label>
+    </div>
+    <div class="trace-actions">
+      <button id="pdf-cancel">Cancel</button>
+      <button id="pdf-run" class="primary">Export PDF</button>
+    </div>
+  </div>
+</div>
+
 <div id="trace-modal" hidden>
   <div id="trace-card">
     <h2>PowerTRACE — Bitmap to Vector</h2>
@@ -520,6 +567,8 @@
 <script src="js/pro.js"></script>
 <script src="js/distort.js"></script>
 <script src="js/trace.js"></script>
+<script src="js/pdf.js"></script>
+<script src="js/fountain.js"></script>
 <script>
 if ("serviceWorker" in navigator && location.protocol !== "file:") {
   navigator.serviceWorker.register("sw.js").catch(() => {});

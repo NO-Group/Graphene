@@ -136,6 +136,24 @@ npm run dist:linux     # build AppImage + .deb
 
 Press `?` in the app for the full shortcut list.
 
+**Print production**
+- Export **print-ready PDF** (vector, not a rasterised screenshot) — the writer is
+  implemented from scratch: no libraries, no server
+- **DeviceCMYK** or DeviceRGB output, selected at export time
+- **Bleed** and **crop marks** for commercial printing, with correct
+  `TrimBox` / `BleedBox` / `MediaBox`
+- Gradients export as native PDF **axial & radial shadings** (multi-stop gradients
+  become stitched exponential functions — they stay resolution-independent)
+- Transparency via `ExtGState`, text stays **live and selectable** using the
+  base-14 fonts, and multi-page documents export as multi-page PDFs
+
+**Fountain fills**
+- **Unlimited colour stops** with a draggable ramp: double-click to add a stop,
+  double-click a stop to remove it, drag to reposition
+- Linear & radial, adjustable angle, one-click reverse
+- Six built-in presets (Sunset, Ocean, Mint, Grape, Gold, Steel)
+- **Convert Text to Curves** (Ctrl+Q) turns live text into editable vector paths
+
 ## Architecture
 
 | File | Role |
@@ -149,9 +167,11 @@ Press `?` in the app for the full shortcut list.
 | `js/pro.js` | Multi-page documents, CMYK/HSB colour, palette, text-on-path, contour, blend, PowerClip, auto-save recovery, dimension readout |
 | `js/trace.js` | PowerTRACE: quantisation (median-cut + k-means), Moore-neighbour contour tracing, RDP simplification, bezier smoothing |
 | `js/distort.js` | Envelope & perspective warping (homography solver), knife, eraser, roughen, twirl |
+| `js/pdf.js` | Print-ready PDF 1.7 writer built from scratch: DeviceCMYK/RGB, axial & radial shadings, transparency groups, base-14 fonts, crop marks, bleed |
+| `js/fountain.js` | Multi-stop fountain-fill editor (draggable ramp) and text→curves conversion |
 | `sw.js` + `manifest.json` | Offline service worker + PWA install manifest |
 | `desktop/main.js` + `package.json` | Electron shell + electron-builder config for native Windows/macOS/Linux builds |
-| `test/` | 135 automated tests — boolean geometry, tracer, distortion, headless app smoke tests, simulated pointer interaction |
+| `test/` | 193 automated tests — boolean geometry, tracer, distortion, headless app smoke tests, simulated pointer interaction |
 
 ## Tests
 
@@ -169,6 +189,9 @@ npm test
   undo/redo, export and rendering
 - `test/interaction.test.js` — dispatches real pointer/keyboard events to draw,
   drag, marquee-select, duplicate, delete and undo
+- `test/pdf.test.js` — 58 tests: CMYK conversion, PDF object graph, xref offset
+  integrity, stream `/Length` correctness, shadings, fonts & string escaping,
+  transparency, bleed/crop marks, multi-stop gradients, text→curves
 
 The editor itself is vanilla ES2020 + SVG — no frameworks, no build step, and
 the same codebase powers the browser, PWA, and desktop versions.
@@ -181,6 +204,9 @@ the same codebase powers the browser, PWA, and desktop versions.
 | Bitmap tracing | PowerTRACE | PowerTRACE (quantise + k-means + contour trace) |
 | Envelope / Perspective | Yes | Yes (true projective homography) |
 | Knife / Eraser | Yes | Yes (boolean-exact, area-conserving) |
+| Print PDF export | Yes | Yes — CMYK, bleed, crop marks, vector shadings |
+| Fountain fills | Unlimited stops | Unlimited stops, draggable ramp, presets |
+| Convert to curves | Yes | Yes |
 | Contour & Blend | Yes | Yes |
 | PowerClip | Yes | Yes |
 | Text on path | Yes | Yes |

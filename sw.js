@@ -1,5 +1,5 @@
 /* Graphene service worker — full offline support */
-const CACHE = "graphene-v4";
+const CACHE = "graphene-v5";
 const ASSETS = [
   "./",
   "./index.html",
@@ -13,6 +13,8 @@ const ASSETS = [
   "./js/pro.js",
   "./js/distort.js",
   "./js/trace.js",
+  "./js/pdf.js",
+  "./js/fountain.js",
   "./manifest.json",
   "./icons/icon-192.png",
   "./icons/icon-512.png",

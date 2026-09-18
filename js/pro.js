@@ -14,14 +14,16 @@ function ensurePages() {
     App.pages = [{ name: "Page 1", objects: App.objects, guides: App.doc.guides }];
     App.pageIndex = 0;
   }
+  /* Many operations (delete, z-order, ungroup, booleans, undo) REPLACE the
+     App.objects array rather than mutating it, which would leave the active
+     page pointing at a stale array. Re-bind on every read so that page data,
+     saving and PDF export always see live artwork. */
+  const cur = App.pages[App.pageIndex];
+  if (cur) { cur.objects = App.objects; cur.guides = App.doc.guides; }
   return App.pages;
 }
 
-function syncActivePage() {
-  const pages = ensurePages();
-  const p = pages[App.pageIndex];
-  if (p) { p.objects = App.objects; p.guides = App.doc.guides; }
-}
+function syncActivePage() { ensurePages(); }
 
 function gotoPage(i) {
   const pages = ensurePages();

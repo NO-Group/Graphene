@@ -35,9 +35,17 @@ function ensureGradient(o) {
     g.appendChild(svgEl("stop", { offset: "100%" }));
     gDefs.appendChild(g);
   }
-  const stops = g.querySelectorAll("stop");
-  stops[0].setAttribute("stop-color", f.a);
-  stops[1].setAttribute("stop-color", f.b);
+  /* multi-stop support: f.stops = [{p:0..1, c:"#hex"}...]; falls back to a/b */
+  const list = (f.stops && f.stops.length >= 2)
+    ? f.stops.slice().sort((x, y) => x.p - y.p)
+    : [{ p: 0, c: f.a }, { p: 1, c: f.b }];
+  let stops = g.querySelectorAll("stop");
+  while (stops.length > list.length) { g.removeChild(g.lastChild); stops = g.querySelectorAll("stop"); }
+  while (stops.length < list.length) { g.appendChild(svgEl("stop", {})); stops = g.querySelectorAll("stop"); }
+  list.forEach((st, i) => {
+    stops[i].setAttribute("offset", (clamp(st.p, 0, 1) * 100) + "%");
+    stops[i].setAttribute("stop-color", st.c);
+  });
   if (f.type === "linear") {
     const a = deg2rad(f.angle || 0);
     const x = Math.cos(a) / 2, y = Math.sin(a) / 2;

@@ -408,3 +408,26 @@ body.outline-view #objects image { opacity: .25; }
 #stage.tool-knife { cursor: crosshair; }
 #stage.tool-eraser { cursor: cell; }
 #stage.tool-dropper { cursor: copy; }
+
+/* ============================================================
+   V5 — fountain fill ramp, PDF dialog
+   ============================================================ */
+#grad-ramp-wrap { position: relative; margin: 2px 0 16px; }
+#grad-ramp {
+  height: 26px; border-radius: 5px; cursor: copy;
+  border: 1px solid var(--border);
+  background-image:
+    linear-gradient(45deg, #2a2d35 25%, transparent 25%, transparent 75%, #2a2d35 75%),
+    linear-gradient(45deg, #2a2d35 25%, transparent 25%, transparent 75%, #2a2d35 75%);
+  background-size: 10px 10px; background-position: 0 0, 5px 5px;
+}
+#grad-handles { position: absolute; left: 0; right: 0; top: 24px; height: 14px; }
+.grad-stop {
+  position: absolute; top: 0; transform: translateX(-50%);
+  width: 13px; height: 13px; padding: 0; cursor: grab;
+  border: 2px solid #fff; border-radius: 50%;
+  box-shadow: 0 1px 4px rgba(0,0,0,.6);
+}
+.grad-stop.on { border-color: var(--accent2); transform: translateX(-50%) scale(1.25); z-index: 2; }
+.grad-stop:active { cursor: grabbing; }
+#props-fountain .row { margin-top: 10px; }

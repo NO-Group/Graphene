@@ -1,7 +1,7 @@
 {
   "name": "graphene-studio",
   "productName": "Graphene",
-  "version": "4.0.0",
+  "version": "5.0.0",
   "description": "Professional vector graphics editor \u2014 runs in any browser, installs as a PWA, or packages as a native desktop app.",
   "main": "desktop/main.js",
   "scripts": {

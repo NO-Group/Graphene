@@ -108,6 +108,10 @@ function runCommand(cmd) {
     case "preset-hd": setPageSize(1920, 1080); break;
     case "preset-card": setPageSize(1050, 600); break;
 
+    case "export-pdf": openPDFDialog(); break;
+    case "export-pdf-quick": exportPDF({ colorSpace: "cmyk", allPages: true }); break;
+    case "text-to-curves": textToCurves(); break;
+
     /* --- bitmap tracing --- */
     case "trace": openTraceDialog(); break;
     case "trace-quick": powerTrace({ mode: "color", colors: 16, detail: 1, smooth: true }); break;
@@ -407,6 +411,7 @@ function updateUI() {
   renderLayers();
   updateHistButtons();
   if (typeof syncColorModel === "function") syncColorModel();
+  if (typeof renderRamp === "function") renderRamp();
   uiSyncing = false;
 }
 
@@ -674,6 +679,8 @@ window.addEventListener("keydown", e => {
     if (k === "r") { e.preventDefault(); setRulers(!App.rulers); return; }
     if (k === "2") { e.preventDefault(); lockSelection(); return; }
     if (k === "w") { e.preventDefault(); shapeOp("weld"); return; }
+    if (k === "q") { e.preventDefault(); selectedObjs().some(o => o.type === "text") ? textToCurves() : convertSelectionToPath(); return; }
+    if (e.shiftKey && k === "p") { e.preventDefault(); openPDFDialog(); return; }
     if (k === "y") { e.preventDefault(); runCommand("toggle-outline"); return; }
     if (e.key === "PageDown") { e.preventDefault(); gotoPage(App.pageIndex + 1); return; }
     if (e.key === "PageUp") { e.preventDefault(); gotoPage(App.pageIndex - 1); return; }
