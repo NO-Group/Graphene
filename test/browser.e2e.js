@@ -190,7 +190,10 @@ function findBrowser() {
          browser can, via elementFromPoint at the control's own centre. */
       const reachable = await page.evaluate(() => {
         const out = [];
-        for (const sel of ["#toolbar [data-tool='rect']", "#palette .swatch", "[data-cmd='undo']"]) {
+        /* Only controls that are meant to be visible at rest. A [data-cmd] can
+           also live inside a closed menu dropdown, which is legitimately
+           zero-size until the menu opens. */
+        for (const sel of ["#toolbar [data-tool='rect']", "#palette .swatch", "#btn-undo", "#btn-redo"]) {
           const el = document.querySelector(sel);
           if (!el) { out.push([sel, "missing"]); continue; }
           const r = el.getBoundingClientRect();
@@ -223,6 +226,34 @@ function findBrowser() {
       await page.click("#palette .swatch");
       const after = await page.evaluate(() => App.objects[0].fill.color);
       t("clicking a swatch changes the fill", after !== applied, `${applied} -> ${after}`);
+    }
+
+    {
+      /* a menu item is zero-size until its menu opens: verify the open path */
+      const before = await page.evaluate(() => {
+        const b = document.querySelector("[data-cmd='undo']");
+        const r = b.getBoundingClientRect();
+        return r.width * r.height;
+      });
+      t("a menu item is hidden while its menu is closed", before === 0, before);
+      const menus = await page.$$(".menu-title");
+      let opened = 0;
+      for (const m of menus) {
+        const label = await page.evaluate(el => el.textContent.trim(), m);
+        if (label === "Edit") { await m.click(); opened = 1; break; }
+      }
+      t("the Edit menu could be clicked", opened === 1);
+      const after = await page.evaluate(() => {
+        const b = document.querySelector("[data-cmd='undo']");
+        const r = b.getBoundingClientRect();
+        return { area: Math.round(r.width * r.height), hit: (() => {
+          const h = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+          return h === b || b.contains(h);
+        })() };
+      });
+      t("  …and its items become real, clickable targets",
+        after.area > 0 && after.hit === true, JSON.stringify(after));
+      await page.keyboard.press("Escape");
     }
 
     console.log("— the cursor actually changes over a shape —");
