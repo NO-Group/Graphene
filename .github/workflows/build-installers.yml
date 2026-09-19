@@ -29,8 +29,35 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: "20", cache: "npm" }
       - run: npm ci --ignore-scripts
+
+      - name: Environment
+        run: |
+          node -v && npm -v
+          echo "openssl: $(openssl version 2>&1 || echo MISSING)"
+          echo "git:     $(git --version)"
+
+      # Run each suite separately so a failure names itself in the summary,
+      # instead of collapsing into a single opaque "exit code 1".
       - name: Run the full suite
-        run: npm test
+        run: |
+          set +e
+          failed=""
+          for f in test/*.test.js test/app.smoke.js; do
+            [ -f "$f" ] || continue
+            echo "::group::$f"
+            node "$f"
+            code=$?
+            echo "::endgroup::"
+            if [ $code -ne 0 ]; then
+              failed="$failed $f"
+              echo "::error file=$f::suite failed with exit $code"
+            fi
+          done
+          if [ -n "$failed" ]; then
+            echo "FAILED SUITES:$failed"
+            exit 1
+          fi
+          echo "All suites passed."
 
   build:
     needs: test
