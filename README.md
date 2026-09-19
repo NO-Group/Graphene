@@ -6,6 +6,41 @@ Windows / macOS / Linux app.
 
 ![Graphene](https://img.shields.io/badge/vector-editor-7C5CFF) ![Zero runtime dependencies](https://img.shields.io/badge/runtime%20deps-0-39D2C0)
 
+## Installing Graphene on your computer
+
+**Option 1 — install from the browser (works right now, no build step).**
+Serve the folder and open it, then use your browser's install button:
+
+```bash
+npm start           # serves http://localhost:8000
+```
+
+Chrome/Edge show an install icon in the address bar; Firefox and Safari have
+"Add to Home Screen" / "Install". Graphene then gets its own window, a
+Start-menu or Launchpad entry, and works fully offline via the service worker.
+
+**Option 2 — portable bundle.** `./build/make-portable.sh` produces
+`dist/graphene-portable-<version>.zip`: unzip anywhere and run `Graphene.bat`
+(Windows) or `Graphene.command` (macOS/Linux). Nothing is installed and nothing
+leaves the machine.
+
+**Option 3 — native installers.** Push a `v*` tag, or run the *Build installers*
+workflow from the Actions tab. GitHub's runners produce:
+
+| Platform | Artifacts |
+|---|---|
+| Windows | `Graphene-<ver>-win-x64.exe` (NSIS installer) and a portable `.exe` |
+| Linux | `Graphene-<ver>-linux-x86_64.AppImage` and `.deb` |
+| macOS | `Graphene-<ver>-mac-x64.dmg` and `-arm64.dmg` |
+
+Building locally works the same way (`npm run dist:win`, `dist:linux`,
+`dist:mac`) wherever `objects.githubusercontent.com` is reachable — that host
+serves the Electron runtime and is blocked in some sandboxed environments.
+macOS `.dmg` files can only be produced on a Mac. The builds are unsigned, so
+Windows SmartScreen and macOS Gatekeeper will warn on first launch; signing
+needs a paid certificate.
+
+
 ## Run it — three ways
 
 **1. Browser (any OS, zero install)**
@@ -193,7 +228,7 @@ Press `?` in the app for the full shortcut list.
 | `js/png.js` | DEFLATE **inflate + deflate** and a PNG decoder, all written from scratch: PNG artwork embeds losslessly and every exported stream is really compressed |
 | `sw.js` + `manifest.json` | Offline service worker + PWA install manifest |
 | `desktop/main.js` + `package.json` | Electron shell + electron-builder config for native Windows/macOS/Linux builds |
-| `test/` | 456 automated tests — boolean geometry, tracer, distortion, headless app smoke tests, simulated pointer interaction, service worker, storage resilience, full command sweep |
+| `test/` | 551 automated tests — boolean geometry, tracer, distortion, headless app smoke tests, simulated pointer interaction, service worker, storage resilience, full command sweep |
 
 ## Tests
 

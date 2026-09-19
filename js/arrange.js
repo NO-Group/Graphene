@@ -285,3 +285,62 @@ function reversePath() {
   commit("reverse path"); render(); updateUI();
   setHint(`Reversed ${objs.length} path${objs.length === 1 ? "" : "s"}`);
 }
+
+/* ============================================================
+   Desktop (Electron) integration.
+   No-ops in a browser: window.graphene only exists in the packaged app,
+   where desktop/preload.js defines it.
+   ============================================================ */
+function initDesktopBridge() {
+  const api = (typeof window !== "undefined") && window.graphene;
+  if (!api || !api.isDesktop) return false;
+
+  document.documentElement.classList.add("is-desktop");
+
+  /* native menu -> the same command path the in-app menu uses */
+  if (typeof api.onCommand === "function") {
+    api.onCommand(cmd => {
+      try { runCommand(cmd); }
+      catch (e) { if (typeof setHint === "function") setHint("Command failed: " + e.message); }
+    });
+  }
+
+  /* file chosen in the native Open dialog */
+  if (typeof api.onOpenProject === "function") {
+    api.onOpenProject(text => {
+      /* reuse the hardened loader by handing it a FileReader-shaped payload */
+      const fakeFile = { __text: text };
+      const RealFR = window.FileReader;
+      window.FileReader = function () {
+        this.readAsText = () => { this.result = text; if (this.onload) this.onload(); };
+      };
+      try { openProjectFile(fakeFile); }
+      finally { window.FileReader = RealFR; }
+    });
+  }
+
+  /* route downloads through a native Save dialog instead of the DOM anchor */
+  if (typeof api.saveFile === "function" && typeof window.download === "function") {
+    const domDownload = window.download;
+    window.download = function (blob, name) {
+      try {
+        const isText = /\.(svg|json)$/i.test(name || "");
+        const rd = new FileReader();
+        rd.onload = () => {
+          const res = rd.result;
+          if (isText) api.saveFile(String(res), name, "utf8");
+          else api.saveFile(String(res).split(",").pop(), name, "base64");
+        };
+        if (isText) rd.readAsText(blob); else rd.readAsDataURL(blob);
+      } catch (e) {
+        domDownload(blob, name);                 // fall back to the browser path
+      }
+    };
+  }
+  return true;
+}
+
+if (typeof window !== "undefined") {
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", initDesktopBridge);
+  else initDesktopBridge();
+}
