@@ -96,8 +96,17 @@ jobs:
             echo "Add CSC_LINK and CSC_KEY_PASSWORD under Settings > Secrets > Actions to sign."
           fi
 
+      - name: Verify build inputs
+        shell: bash
+        run: |
+          node -e "const p=require('./package.json');console.log('appId   ',p.build.appId);console.log('product ',p.build.productName);console.log('version ',p.version)"
+          for f in build/icon.ico build/icon.icns build/icons/256x256.png desktop/main.js desktop/preload.js desktop/splash.html; do
+            if [ -f "$f" ]; then echo "  ok   $f"; else echo "  MISSING $f"; exit 1; fi
+          done
+          node -e "require('fs').accessSync('node_modules/electron');console.log('electron package present')"
+
       - name: Build installer
-        run: npx electron-builder ${{ matrix.target }} --publish never
+        run: npx electron-builder ${{ matrix.target }} --publish never --config.npmRebuild=false
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Both are empty when the secrets are absent, which electron-builder
@@ -117,8 +126,11 @@ jobs:
           done | tee SHA256SUMS.txt
 
       - name: Show what was produced
+        if: always()
         shell: bash
-        run: ls -lah dist/ || true
+        run: |
+          ls -lah dist/ 2>/dev/null || echo "no dist directory"
+          find dist -maxdepth 2 -name "*.log" -exec sh -c 'echo "--- {} ---"; cat "{}"' \; 2>/dev/null || true
 
       - uses: actions/upload-artifact@v4
         with:
