@@ -244,6 +244,38 @@ function flipChild(o, horizontal, cx, cy) {
   if (o.type === "group") { for (const c of o.children) flipChild(c, horizontal, cx, cy); return; }
   scaleObj(o, horizontal ? -1 : 1, horizontal ? 1 : -1, cx, cy);
   if (o.rot) o.rot = -o.rot;
+  /* scaleObj normalises rect/ellipse/image boxes with min/abs, so mirroring a
+     symmetric primitive about its own centre leaves the box identical and the
+     flip appears to do nothing. The mirror has to be recorded on the object so
+     the renderer and the exporters can apply it to the CONTENT. */
+  if (o.type === "image" || o.type === "rect" || o.type === "ellipse" || o.type === "polygon") {
+    if (horizontal) o.flipH = !o.flipH; else o.flipV = !o.flipV;
+  }
+  flipPaint(o.fill, horizontal);
+  flipPaint(o.stroke, horizontal);
+}
+
+/* Mirror a gradient/mesh paint so it follows the shape it fills. */
+function flipPaint(p, horizontal) {
+  if (!p || typeof p !== "object") return;
+  if (typeof p.angle === "number" && (p.type === "linear" || p.type === "radial" || p.type === "conical")) {
+    /* reflect the direction vector: horizontal mirrors about the vertical axis */
+    p.angle = ((horizontal ? 180 - p.angle : -p.angle) % 360 + 360) % 360;
+  }
+  if (p.type === "mesh" && p.mesh && Array.isArray(p.mesh.nodes)) {
+    const rows = p.mesh.nodes;
+    if (horizontal) { for (const row of rows) row.reverse(); }
+    else rows.reverse();
+    /* u/v are normalised coordinates inside the bbox, so they mirror too */
+    for (let r = 0; r < rows.length; r++) {
+      for (let c = 0; c < rows[r].length; c++) {
+        const n = rows[r][c];
+        if (!n) continue;
+        if (horizontal && typeof n.u === "number") n.u = 1 - n.u;
+        if (!horizontal && typeof n.v === "number") n.v = 1 - n.v;
+      }
+    }
+  }
 }
 
 /* ---------- shape → path conversion ---------- */

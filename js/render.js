@@ -201,10 +201,7 @@ function renderObj(o) {
       wrap.appendChild(el);
       wrap.dataset.id = o.id;
       if (o.opacity < 1) wrap.setAttribute("opacity", o.opacity);
-      if (o.rot) {
-        const b = localBBox(o);
-        wrap.setAttribute("transform", `rotate(${o.rot} ${b.x + b.w / 2} ${b.y + b.h / 2})`);
-      }
+      { const tf = objTransform(o); if (tf) wrap.setAttribute("transform", tf); }
       return wrap;
     }
   }
@@ -215,11 +212,24 @@ function renderObj(o) {
     const mk = ensureAlphaMask(o);
     if (mk) el.setAttribute("mask", mk);
   }
-  if (o.rot) {
-    const b = localBBox(o);
-    el.setAttribute("transform", `rotate(${o.rot} ${b.x + b.w / 2} ${b.y + b.h / 2})`);
-  }
+  { const tf = objTransform(o); if (tf) el.setAttribute("transform", tf); }
   return el;
+}
+
+/* Transform string for an object: rotation plus any recorded mirror.
+   flipH/flipV are set by flipChild() for primitives whose bounding box is
+   normalised (rect/ellipse/image/polygon), where mirroring the box alone is a
+   no-op and the CONTENT has to be mirrored instead. */
+function objTransform(o) {
+  const parts = [];
+  const b = localBBox(o);
+  const cx = b.x + b.w / 2, cy = b.y + b.h / 2;
+  if (o.rot) parts.push(`rotate(${o.rot} ${cx} ${cy})`);
+  if (o.flipH || o.flipV) {
+    const sx = o.flipH ? -1 : 1, sy = o.flipV ? -1 : 1;
+    parts.push(`translate(${cx} ${cy}) scale(${sx} ${sy}) translate(${-cx} ${-cy})`);
+  }
+  return parts.join(" ");
 }
 
 /* ---------- full render ---------- */

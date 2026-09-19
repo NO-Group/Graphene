@@ -573,6 +573,16 @@ function emitObject(o, ctx) {
     ops.push(`1 0 0 1 ${f3(-cx)} ${f3(-cy)} cm`);
   }
 
+  /* mirroring, recorded by flipChild() for primitives with a normalised box */
+  if (o.flipH || o.flipV) {
+    const b = localBBox(o);
+    const cx = b.x + b.w / 2, cy = b.y + b.h / 2;
+    const sx = o.flipH ? -1 : 1, sy = o.flipV ? -1 : 1;
+    ops.push(`1 0 0 1 ${f3(cx)} ${f3(cy)} cm`);
+    ops.push(`${f3(sx)} 0 0 ${f3(sy)} 0 0 cm`);
+    ops.push(`1 0 0 1 ${f3(-cx)} ${f3(-cy)} cm`);
+  }
+
   if (o.type === "text") {
     emitText(o, ctx);
     ops.push("Q");
