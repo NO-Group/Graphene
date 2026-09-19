@@ -135,8 +135,11 @@ jobs:
           export KEYSTORE_PASSWORD
           echo "::add-mask::$KEYSTORE_PASSWORD"
           KEYDIR="$RUNNER_TEMP/keys"
-          if ! OUT_DIR="$KEYDIR" bash build/signing/make-keystore.sh; then
+          if ! OUT_DIR="$KEYDIR" bash build/signing/make-keystore.sh 2>/tmp/ks.err; then
             echo "::warning::keystore generation failed - building unsigned."
+            head -c 900 /tmp/ks.err | while IFS= read -r l; do
+              echo "::error::KEYSTORE $(printf '%s' "$l" | cut -c1-300)"
+            done
             echo "mode=none" >> "$GITHUB_OUTPUT"; exit 0
           fi
           if ! bash build/signing/verify-keystore.sh "$KEYDIR/graphene.p12"; then
