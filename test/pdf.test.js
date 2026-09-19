@@ -227,6 +227,43 @@ console.log("\n— malformed geometry —");
   t("xref offset still parses", /startxref\s+\d+/.test(pdf));
 }
 
+
+/* ---- font stack resolution ------------------------------------------------
+ * PDF_FONTS was looked up with the whole o.font string, so a CSS stack such as
+ * "Georgia, serif" - which is what an imported SVG or an older project file
+ * carries - never matched and silently fell back to Helvetica. Every serif and
+ * monospace document lost its typeface on export. */
+console.log("\n— font stacks —");
+{
+  const R = win.resolveFontName;
+  t("bare family resolves", R("Georgia") === "Times-Roman", R("Georgia"));
+  t("a CSS stack resolves to its first known family", R("Georgia, serif") === "Times-Roman", R("Georgia, serif"));
+  t("quoted families are unquoted", R('"Times New Roman", Times, serif') === "Times-Roman", R('"Times New Roman", Times, serif'));
+  t("monospace stacks resolve", R("Courier New, monospace") === "Courier", R("Courier New, monospace"));
+  t("sans-serif stacks stay Helvetica", R("Helvetica, Arial, sans-serif") === "Helvetica", R("Helvetica, Arial, sans-serif"));
+  t("a bare generic family resolves", R("serif") === "Times-Roman" && R("monospace") === "Courier");
+  t("an unknown serif family is inferred", R("Baskerville, serif") === "Times-Roman", R("Baskerville, serif"));
+  t("an unknown mono family is inferred", R("Consolas, monospace") === "Courier", R("Consolas, monospace"));
+  t("empty and null default to Helvetica", R("") === "Helvetica" && R(null) === "Helvetica" && R(undefined) === "Helvetica");
+  t("a wholly unknown family defaults to Helvetica", R("Wingdings Zapf") === "Helvetica", R("Wingdings Zapf"));
+
+  /* and it must reach the actual PDF */
+  A.objects = []; A.pages = null;
+  const mk = (y, font, bold, italic) => {
+    const o = win.makeText(10, y, "Sample"); o.size = 20; o.font = font; o.bold = bold; o.italic = italic;
+    A.objects.push(o); return o;
+  };
+  mk(40, "Georgia, serif", false, false);
+  mk(80, '"Times New Roman", Times, serif', true, true);
+  mk(120, "Courier New, monospace", false, false);
+  const out = win.buildPDF({ colorSpace: "rgb" });
+  const fonts = [...new Set([...out.matchAll(/\/BaseFont\s*\/([A-Za-z-]+)/g)].map(m => m[1]))];
+  t("a serif stack embeds Times-Roman", fonts.includes("Times-Roman"), fonts.join(","));
+  t("bold+italic serif embeds Times-BoldItalic", fonts.includes("Times-BoldItalic"), fonts.join(","));
+  t("a monospace stack embeds Courier", fonts.includes("Courier"), fonts.join(","));
+  t("no stacked font silently became Helvetica", !fonts.includes("Helvetica"), fonts.join(","));
+}
+
 console.log("\n— text —");
 A.objects = [];
 const txt = win.makeText(20, 100, "Hello (PDF)");

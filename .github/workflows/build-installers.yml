@@ -52,13 +52,38 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # Signing is optional: with the secrets present the build is signed with
+      # com.n_o_group.graphene, without them it still produces working
+      # (unsigned) installers, so forks and PRs are not blocked.
+      - name: Report signing status
+        shell: bash
+        run: |
+          if [ -n "${{ secrets.CSC_LINK }}" ]; then
+            echo "Signing with the com.n_o_group.graphene keystore."
+          else
+            echo "::warning::CSC_LINK is not set - producing UNSIGNED installers."
+            echo "Add CSC_LINK and CSC_KEY_PASSWORD under Settings > Secrets > Actions to sign."
+          fi
+
       - name: Build installer
         run: npx electron-builder ${{ matrix.target }} --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # unsigned builds: CSC_IDENTITY_AUTO_DISCOVERY off stops macOS from
-          # trying to sign with a certificate that is not present
-          CSC_IDENTITY_AUTO_DISCOVERY: false
+          # Both are empty when the secrets are absent, which electron-builder
+          # treats as "do not sign" rather than as an error.
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          # stop macOS hunting for a keychain identity that is not installed
+          CSC_IDENTITY_AUTO_DISCOVERY: ${{ secrets.CSC_LINK != '' }}
+
+      - name: Checksums for every artifact
+        shell: bash
+        run: |
+          cd dist
+          for f in *.exe *.AppImage *.deb *.dmg *.zip; do
+            [ -f "$f" ] || continue
+            if command -v sha256sum >/dev/null; then sha256sum "$f"; else shasum -a 256 "$f"; fi
+          done | tee SHA256SUMS.txt
 
       - name: Show what was produced
         shell: bash
@@ -76,6 +101,7 @@ jobs:
             dist/*.dmg
             dist/*.zip
             dist/latest*.yml
+            dist/SHA256SUMS.txt
 
   release:
     needs: build

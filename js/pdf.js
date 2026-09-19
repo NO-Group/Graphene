@@ -452,8 +452,31 @@ const PDF_FONTS = {
   "georgia": "Times-Roman", "times new roman": "Times-Roman", "times": "Times-Roman",
   "courier new": "Courier", "courier": "Courier",
 };
+/* Resolve a CSS font stack to a base-14 PDF font.
+   o.font may be a bare family ("Georgia") from the dropdown, or a full stack
+   ("Georgia, serif") from an imported SVG or an older project file. Matching
+   the whole string against the table only worked for the former, so every
+   stacked value silently fell back to Helvetica and lost its typeface. */
+function resolveFontName(font) {
+  const raw = String(font || "").trim();
+  if (!raw) return "Helvetica";
+  for (let part of raw.split(",")) {
+    part = part.trim().replace(/^["']|["']$/g, "").toLowerCase();
+    if (!part) continue;
+    if (PDF_FONTS[part]) return PDF_FONTS[part];
+    /* generic CSS families, which are what a stack ends with */
+    if (part === "serif") return "Times-Roman";
+    if (part === "monospace") return "Courier";
+    if (part === "sans-serif" || part === "ui-sans-serif") return "Helvetica";
+    /* unknown family: infer from its name before giving up */
+    if (/times|georgia|garamond|book|roman|serif/.test(part)) return "Times-Roman";
+    if (/mono|courier|consol|code/.test(part)) return "Courier";
+  }
+  return "Helvetica";
+}
+
 function fontFor(ctx, o) {
-  let base = PDF_FONTS[String(o.font || "").toLowerCase()] || "Helvetica";
+  let base = resolveFontName(o.font);
   const serif = base.startsWith("Times"), mono = base.startsWith("Courier");
   if (o.bold && o.italic) base = serif ? "Times-BoldItalic" : mono ? "Courier-BoldOblique" : "Helvetica-BoldOblique";
   else if (o.bold) base = serif ? "Times-Bold" : mono ? "Courier-Bold" : "Helvetica-Bold";
