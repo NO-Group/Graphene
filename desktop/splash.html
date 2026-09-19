@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:;">
+<title>Graphene</title>
+<style>
+  html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    -webkit-user-select: none; user-select: none; -webkit-app-region: drag;
+  }
+  .card {
+    position: relative; width: 100%; height: 100%;
+    border-radius: 12px; overflow: hidden;
+    background: linear-gradient(135deg, #7C5CFF 0%, #5B6BFF 55%, #39D2C0 100%);
+    box-shadow: 0 24px 60px rgba(0,0,0,.5);
+  }
+  .fold { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .body { position: absolute; left: 34px; top: 50%; transform: translateY(-62%); display: flex; align-items: center; gap: 16px; }
+  .mark { width: 54px; height: 54px; filter: drop-shadow(0 3px 10px rgba(0,0,0,.35)); }
+  h1 { margin: 0; font-size: 38px; line-height: 1.04; letter-spacing: -.02em; color: #fff; text-shadow: 0 2px 14px rgba(0,0,0,.28); }
+  p  { margin: 4px 0 0; font-size: 13px; color: rgba(255,255,255,.88); }
+  .foot { position: absolute; left: 34px; right: 34px; bottom: 20px; display: flex; align-items: center; gap: 14px; font-size: 12px; color: rgba(255,255,255,.75); }
+  .bar { flex: 1; height: 3px; border-radius: 2px; background: rgba(255,255,255,.22); overflow: hidden; }
+  .bar i { display: block; height: 100%; width: 34%; border-radius: 2px;
+           background: linear-gradient(90deg, rgba(255,255,255,.35), #fff, rgba(255,255,255,.35));
+           animation: slide 1.05s ease-in-out infinite; }
+  @keyframes slide { 0% { transform: translateX(-110%);} 100% { transform: translateX(330%);} }
+  @media (prefers-reduced-motion: reduce) { .bar i { animation: none; width: 100%; } }
+</style>
+</head>
+<body>
+  <div class="card">
+    <svg class="fold" viewBox="0 0 520 300" preserveAspectRatio="none" aria-hidden="true">
+      <defs>
+        <linearGradient id="curl" x1="1" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#ffffff" stop-opacity="0.95"/>
+          <stop offset="1" stop-color="#cfd6ff" stop-opacity="0.55"/>
+        </linearGradient>
+      </defs>
+      <path d="M520 0 L520 196 Q392 150 348 0 Z" fill="url(#curl)" opacity="0.9"/>
+      <path d="M520 0 L348 0 Q392 150 520 196 Z" fill="#ffffff" opacity="0.14"/>
+    </svg>
+    <div class="body">
+      <svg class="mark" viewBox="0 0 24 24" aria-hidden="true">
+        <defs><linearGradient id="lg" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#d7f5ef"/>
+        </linearGradient></defs>
+        <path fill="url(#lg)" d="M12 2l9 5v10l-9 5-9-5V7z"/>
+        <path fill="#16171c" opacity="0.34" d="M12 2v20l-9-5V7z"/>
+      </svg>
+      <div>
+        <h1>Graphene</h1>
+        <p>Vector Design Studio</p>
+      </div>
+    </div>
+    <div class="foot">
+      <span id="ver"></span>
+      <span class="bar"><i></i></span>
+    </div>
+  </div>
+<script>
+  /* The version is injected by the shell via the query string; no IPC, no
+     node access, and the CSP above blocks everything else. */
+  try {
+    var v = new URLSearchParams(location.search).get("v");
+    if (v) document.getElementById("ver").textContent = v;
+  } catch (e) {}
+</script>
+</body>
+</html>

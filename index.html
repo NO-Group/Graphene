@@ -1,0 +1,699 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Graphene — Vector Design Studio</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%237C5CFF'/%3E%3Cstop offset='1' stop-color='%2339D2C0'/%3E%3C/linearGradient%3E%3C/defs%3E%3Cpath fill='url(%23g)' d='M12 2l9 5v10l-9 5-9-5V7z'/%3E%3C/svg%3E">
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#16171c">
+<link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+
+<!-- ===== Splash / launch screen =====================================
+     Inlined immediately after <body> and styled from css/styles.css so it
+     paints on the first frame, before any module has parsed. Removed by
+     js/splash.js once the app signals it is ready. -->
+<div id="splash" role="status" aria-live="polite" aria-label="Graphene is starting">
+  <div class="splash-veil"></div>
+  <div class="splash-card">
+    <!-- folded-corner ribbon, drawn as SVG so it scales cleanly -->
+    <svg class="splash-fold" viewBox="0 0 520 300" aria-hidden="true" preserveAspectRatio="none">
+      <defs>
+        <linearGradient id="sp-sheet" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stop-color="#7C5CFF"/>
+          <stop offset="0.55" stop-color="#5B6BFF"/>
+          <stop offset="1" stop-color="#39D2C0"/>
+        </linearGradient>
+        <linearGradient id="sp-curl" x1="1" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#ffffff" stop-opacity="0.95"/>
+          <stop offset="1" stop-color="#cfd6ff" stop-opacity="0.55"/>
+        </linearGradient>
+      </defs>
+      <rect width="520" height="300" fill="url(#sp-sheet)"/>
+      <path d="M520 0 L520 196 Q392 150 348 0 Z" fill="url(#sp-curl)" opacity="0.9"/>
+      <path d="M520 0 L348 0 Q392 150 520 196 Z" fill="#ffffff" opacity="0.14"/>
+    </svg>
+
+    <div class="splash-body">
+      <div class="splash-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><defs><linearGradient id="sp-logo" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#d7f5ef"/>
+        </linearGradient></defs>
+        <path fill="url(#sp-logo)" d="M12 2l9 5v10l-9 5-9-5V7z"/>
+        <path fill="#16171c" opacity="0.34" d="M12 2v20l-9-5V7z"/></svg>
+      </div>
+      <div class="splash-word">
+        <h1>Graphene</h1>
+        <p id="splash-status">Vector Design Studio</p>
+      </div>
+    </div>
+
+    <div class="splash-foot">
+      <span id="splash-ver">7.0.0</span>
+      <span class="splash-bar" aria-hidden="true"><i></i></span>
+    </div>
+  </div>
+</div>
+
+
+<header id="topbar">
+  <div id="logo"><svg viewBox="0 0 24 24" width="22" height="22"><defs><linearGradient id="logo-g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#7C5CFF"/><stop offset="1" stop-color="#39D2C0"/></linearGradient></defs><path fill="url(#logo-g)" d="M12 2l9 5v10l-9 5-9-5V7z"/></svg><span>Graphene</span></div>
+
+  <nav id="menubar">
+    <div class="menu" data-menu>
+      <button class="menu-title">File</button>
+      <div class="dropdown">
+        <button data-cmd="new">New Document <kbd>Ctrl+Alt+N</kbd></button>
+        <button data-cmd="open">Open Project… <kbd>Ctrl+O</kbd></button>
+        <button data-cmd="save">Save Project <kbd>Ctrl+S</kbd></button>
+        <hr>
+        <button data-cmd="import-image">Import Image…</button>
+        <button data-cmd="import-svg">Import SVG…</button>
+        <hr>
+        <button data-cmd="export-svg">Export SVG</button>
+        <button data-cmd="export-png">Export PNG (1×)</button>
+        <button data-cmd="export-png2">Export PNG (2×)</button>
+        <button data-cmd="export-png4">Export PNG (4×)</button>
+        <hr>
+        <button data-cmd="export-pdf">Export PDF (print/CMYK)…</button>
+        <button data-cmd="export-pdf-quick">Export PDF (quick)</button>
+      </div>
+    </div>
+    <div class="menu" data-menu>
+      <button class="menu-title">Edit</button>
+      <div class="dropdown">
+        <button data-cmd="undo">Undo <kbd>Ctrl+Z</kbd></button>
+        <button data-cmd="redo">Redo <kbd>Ctrl+Shift+Z</kbd></button>
+        <hr>
+        <button data-cmd="cut">Cut <kbd>Ctrl+X</kbd></button>
+        <button data-cmd="copy">Copy <kbd>Ctrl+C</kbd></button>
+        <button data-cmd="paste">Paste <kbd>Ctrl+V</kbd></button>
+        <button data-cmd="duplicate">Duplicate <kbd>Ctrl+D</kbd></button>
+        <button data-cmd="delete">Delete <kbd>Del</kbd></button>
+        <hr>
+        <button data-cmd="select-all">Select All <kbd>Ctrl+A</kbd></button>
+      </div>
+    </div>
+    <div class="menu" data-menu>
+      <button class="menu-title">Object</button>
+      <div class="dropdown">
+        <button data-cmd="group">Group <kbd>Ctrl+G</kbd></button>
+        <button data-cmd="ungroup">Ungroup <kbd>Ctrl+Shift+G</kbd></button>
+        <hr>
+        <button data-cmd="front">Bring to Front <kbd>]</kbd></button>
+        <button data-cmd="forward">Bring Forward <kbd>Ctrl+]</kbd></button>
+        <button data-cmd="backward">Send Backward <kbd>Ctrl+[</kbd></button>
+        <button data-cmd="back">Send to Back <kbd>[</kbd></button>
+        <hr>
+        <button data-cmd="flip-h">Flip Horizontal</button>
+        <button data-cmd="flip-v">Flip Vertical</button>
+        <hr>
+        <button data-cmd="to-path">Convert to Path <kbd>Ctrl+Shift+C</kbd></button>
+        <button data-cmd="combine">Combine Paths <kbd>Ctrl+L</kbd></button>
+        <button data-cmd="break-apart">Break Apart <kbd>Ctrl+K</kbd></button>
+        <hr>
+        <button data-cmd="powerclip">PowerClip Inside</button>
+        <button data-cmd="release-clip">Release PowerClip</button>
+        <hr>
+        <button data-cmd="lock">Lock <kbd>Ctrl+2</kbd></button>
+        <button data-cmd="unlock-all">Unlock All</button>
+      </div>
+    </div>
+
+    <div class="menu" data-menu>
+      <button class="menu-title">Arrange</button>
+      <div class="dropdown">
+        <button data-cmd="align-left">Align Left <kbd>Ctrl+Shift+L</kbd></button>
+        <button data-cmd="align-hcenter">Align Centres Vertically <kbd>Ctrl+Shift+E</kbd></button>
+        <button data-cmd="align-right">Align Right <kbd>Ctrl+Shift+R</kbd></button>
+        <hr>
+        <button data-cmd="align-top">Align Top <kbd>Ctrl+Shift+T</kbd></button>
+        <button data-cmd="align-vcenter">Align Centres Horizontally <kbd>Ctrl+Shift+M</kbd></button>
+        <button data-cmd="align-bottom">Align Bottom <kbd>Ctrl+Shift+B</kbd></button>
+        <hr>
+        <button data-cmd="dist-h">Distribute Centres Horizontally</button>
+        <button data-cmd="dist-v">Distribute Centres Vertically</button>
+        <button data-cmd="dist-hgap">Distribute Gaps Horizontally</button>
+        <button data-cmd="dist-vgap">Distribute Gaps Vertically</button>
+        <hr>
+        <button data-cmd="same-width">Same Width</button>
+        <button data-cmd="same-height">Same Height</button>
+        <button data-cmd="same-size">Same Size</button>
+      </div>
+    </div>
+
+    <div class="menu" data-menu>
+      <button class="menu-title">Nodes</button>
+      <div class="dropdown">
+        <button data-cmd="node-add">Add Node <kbd>+</kbd></button>
+        <button data-cmd="node-break">Break Apart at Node</button>
+        <button data-cmd="node-join">Join Nodes</button>
+        <hr>
+        <button data-cmd="node-corner">To Corner <kbd>Ctrl+1</kbd></button>
+        <button data-cmd="node-smooth">To Smooth <kbd>Ctrl+3</kbd></button>
+        <button data-cmd="node-symmetric">To Symmetric <kbd>Ctrl+4</kbd></button>
+        <hr>
+        <button data-cmd="path-reverse">Reverse Path Direction</button>
+      </div>
+    </div>
+
+    <div class="menu" data-menu>
+      <button class="menu-title">Shaping</button>
+      <div class="dropdown">
+        <button data-cmd="shape-weld">Weld <kbd>Ctrl+W</kbd></button>
+        <button data-cmd="shape-trim">Trim</button>
+        <button data-cmd="shape-intersect">Intersect</button>
+        <button data-cmd="shape-exclude">Exclude (XOR)</button>
+        <hr>
+        <button data-cmd="shape-fmb">Front Minus Back</button>
+        <button data-cmd="shape-bmf">Back Minus Front</button>
+        <button data-cmd="shape-simplify">Simplify</button>
+        <button data-cmd="shape-boundary">Create Boundary</button>
+      </div>
+    </div>
+
+    <div class="menu" data-menu>
+      <button class="menu-title">Bitmap</button>
+      <div class="dropdown">
+        <button data-cmd="trace">PowerTRACE — Bitmap to Vector…</button>
+        <button data-cmd="trace-quick">Quick Trace (16 colours)</button>
+        <button data-cmd="trace-bw">Trace as Silhouette</button>
+      </div>
+    </div>
+
+    <div class="menu" data-menu>
+      <button class="menu-title">Effects</button>
+      <div class="dropdown">
+        <button data-cmd="envelope">Envelope Distort</button>
+        <button data-cmd="perspective">Add Perspective</button>
+        <hr>
+        <button data-cmd="roughen">Roughen Edges</button>
+        <button data-cmd="twirl">Twirl</button>
+        <hr>
+        <button data-cmd="mesh-fill">Mesh Fill</button>
+        <button data-cmd="transp-fade">Transparency: Fade</button>
+        <button data-cmd="transp-vignette">Transparency: Vignette</button>
+        <button data-cmd="transp-none">Transparency: Clear</button>
+      </div>
+    </div>
+
+    <div class="menu" data-menu>
+      <button class="menu-title">Text</button>
+      <div class="dropdown">
+        <button data-cmd="text-to-curves">Convert Text to Curves</button>
+        <hr>
+        <button data-cmd="text-on-path">Fit Text to Path</button>
+        <button data-cmd="text-off-path">Detach Text from Path</button>
+      </div>
+    </div>
+
+    <div class="menu" data-menu>
+      <button class="menu-title">Page</button>
+      <div class="dropdown">
+        <button data-cmd="page-add">Add Page</button>
+        <button data-cmd="page-dup">Duplicate Page</button>
+        <button data-cmd="page-rename">Rename Page…</button>
+        <button data-cmd="page-delete">Delete Page</button>
+        <hr>
+        <button data-cmd="preset-a4">Preset: A4 (794×1123)</button>
+        <button data-cmd="preset-letter">Preset: US Letter (816×1056)</button>
+        <button data-cmd="preset-square">Preset: Square 1080</button>
+        <button data-cmd="preset-hd">Preset: 1920×1080</button>
+        <button data-cmd="preset-card">Preset: Business Card</button>
+      </div>
+    </div>
+    <div class="menu" data-menu>
+      <button class="menu-title">View</button>
+      <div class="dropdown">
+        <button data-cmd="zoom-in">Zoom In <kbd>+</kbd></button>
+        <button data-cmd="zoom-out">Zoom Out <kbd>−</kbd></button>
+        <button data-cmd="zoom-100">Zoom 100% <kbd>1</kbd></button>
+        <button data-cmd="zoom-fit">Fit Page <kbd>Shift+1</kbd></button>
+        <hr>
+        <button data-cmd="toggle-grid">Toggle Grid <kbd>#</kbd></button>
+        <button data-cmd="toggle-snap">Toggle Snap to Grid</button>
+        <button data-cmd="toggle-rulers">Toggle Rulers <kbd>Ctrl+R</kbd></button>
+        <button data-cmd="toggle-smart">Toggle Smart Guides</button>
+        <button data-cmd="clear-guides">Clear Guides</button>
+        <hr>
+        <button data-cmd="toggle-outline">Wireframe / Outline View <kbd>Ctrl+Y</kbd></button>
+        <button data-cmd="toggle-palette">Show / Hide Colour Palette</button>
+      </div>
+    </div>
+    <div class="menu" data-menu>
+      <button class="menu-title">Help</button>
+      <div class="dropdown">
+        <button data-cmd="help">Keyboard Shortcuts <kbd>?</kbd></button>
+      </div>
+    </div>
+  </nav>
+
+  <div id="topbar-right">
+    <button class="tb-btn" data-cmd="undo" title="Undo (Ctrl+Z)" id="btn-undo"></button>
+    <button class="tb-btn" data-cmd="redo" title="Redo (Ctrl+Shift+Z)" id="btn-redo"></button>
+    <span class="tb-sep"></span>
+    <button class="tb-btn" data-cmd="zoom-out" title="Zoom out"></button>
+    <span id="zoom-label">100%</span>
+    <button class="tb-btn" data-cmd="zoom-in" title="Zoom in"></button>
+    <button class="tb-btn" data-cmd="zoom-fit" title="Fit page"></button>
+    <span class="tb-sep"></span>
+    <button id="btn-export" data-cmd="export-png" title="Export PNG">Export</button>
+  </div>
+</header>
+
+<div id="main">
+  <aside id="toolbar"></aside>
+
+  <div id="canvas-wrap">
+    <canvas id="ruler-h"></canvas>
+    <canvas id="ruler-v"></canvas>
+    <div id="ruler-corner" title="Drag from rulers to add guides"></div>
+    <svg id="stage">
+      <defs id="defs"></defs>
+      <g id="world">
+        <g id="board"></g>
+        <g id="grid"></g>
+        <g id="objects"></g>
+        <g id="guides"></g>
+        <g id="smartguides"></g>
+        <g id="overlay"></g>
+      </g>
+    </svg>
+    <div id="text-editor-holder"></div>
+    <div id="pagebar"></div>
+  </div>
+
+  <aside id="panel">
+    <div id="props">
+
+      <div class="prop-section" id="props-doc">
+        <h3>Document</h3>
+        <div class="row">
+          <label>W <input type="number" id="in-doc-w" min="16" max="8000"></label>
+          <label>H <input type="number" id="in-doc-h" min="16" max="8000"></label>
+        </div>
+        <div class="row">
+          <label class="grow">Background <input type="color" id="in-doc-bg"></label>
+        </div>
+        <div class="row">
+          <label class="chk"><input type="checkbox" id="in-grid-show"> Grid</label>
+          <label class="chk"><input type="checkbox" id="in-grid-snap"> Snap</label>
+          <label>Size <input type="number" id="in-grid-size" min="2" max="500"></label>
+        </div>
+      </div>
+
+      <div class="prop-section" id="props-align">
+        <h3>Align</h3>
+        <div class="row btn-row" id="align-row">
+          <button data-align="l" title="Align left"><svg viewBox="0 0 16 16"><path d="M2 1v14" stroke="currentColor" stroke-width="1.6"/><rect x="4" y="3" width="9" height="3.5" fill="currentColor"/><rect x="4" y="9" width="6" height="3.5" fill="currentColor"/></svg></button>
+          <button data-align="c" title="Align center"><svg viewBox="0 0 16 16"><path d="M8 1v14" stroke="currentColor" stroke-width="1.6"/><rect x="3" y="3" width="10" height="3.5" fill="currentColor"/><rect x="5" y="9" width="6" height="3.5" fill="currentColor"/></svg></button>
+          <button data-align="r" title="Align right"><svg viewBox="0 0 16 16"><path d="M14 1v14" stroke="currentColor" stroke-width="1.6"/><rect x="3" y="3" width="9" height="3.5" fill="currentColor"/><rect x="6" y="9" width="6" height="3.5" fill="currentColor"/></svg></button>
+          <button data-align="t" title="Align top"><svg viewBox="0 0 16 16"><path d="M1 2h14" stroke="currentColor" stroke-width="1.6"/><rect x="3" y="4" width="3.5" height="9" fill="currentColor"/><rect x="9" y="4" width="3.5" height="6" fill="currentColor"/></svg></button>
+          <button data-align="m" title="Align middle"><svg viewBox="0 0 16 16"><path d="M1 8h14" stroke="currentColor" stroke-width="1.6"/><rect x="3" y="3" width="3.5" height="10" fill="currentColor"/><rect x="9" y="5" width="3.5" height="6" fill="currentColor"/></svg></button>
+          <button data-align="b" title="Align bottom"><svg viewBox="0 0 16 16"><path d="M1 14h14" stroke="currentColor" stroke-width="1.6"/><rect x="3" y="3" width="3.5" height="9" fill="currentColor"/><rect x="9" y="6" width="3.5" height="6" fill="currentColor"/></svg></button>
+          <button data-align="dh" title="Distribute horizontally"><svg viewBox="0 0 16 16"><path d="M1.5 1v14M14.5 1v14" stroke="currentColor" stroke-width="1.4"/><rect x="4" y="4" width="3" height="8" fill="currentColor"/><rect x="9" y="4" width="3" height="8" fill="currentColor"/></svg></button>
+          <button data-align="dv" title="Distribute vertically"><svg viewBox="0 0 16 16"><path d="M1 1.5h14M1 14.5h14" stroke="currentColor" stroke-width="1.4"/><rect x="4" y="4" width="8" height="3" fill="currentColor"/><rect x="4" y="9" width="8" height="3" fill="currentColor"/></svg></button>
+        </div>
+      </div>
+
+      <div class="prop-section" id="props-transform">
+        <h3>Transform</h3>
+        <div class="row">
+          <label>X <input type="number" id="in-x" step="1"></label>
+          <label>Y <input type="number" id="in-y" step="1"></label>
+        </div>
+        <div class="row">
+          <label>W <input type="number" id="in-w" step="1"></label>
+          <label>H <input type="number" id="in-h" step="1"></label>
+        </div>
+        <div class="row">
+          <label>∠ <input type="number" id="in-rot" step="1"> </label>
+          <button class="mini-btn" data-cmd="flip-h" title="Flip horizontal">⇋</button>
+          <button class="mini-btn" data-cmd="flip-v" title="Flip vertical">⇵</button>
+        </div>
+        <div class="row">
+          <label class="grow slider-label">Opacity <input type="range" id="in-op" min="0" max="100" value="100"><span id="op-val">100%</span></label>
+        </div>
+      </div>
+
+      <div class="prop-section" id="props-rect">
+        <h3>Rectangle</h3>
+        <div class="row"><label class="grow slider-label">Corner radius <input type="range" id="in-rx" min="0" max="200" value="0"><span id="rx-val">0</span></label></div>
+      </div>
+
+      <div class="prop-section" id="props-polygon">
+        <h3>Polygon</h3>
+        <div class="row">
+          <label>Sides <input type="number" id="in-sides" min="3" max="60"></label>
+          <label class="chk"><input type="checkbox" id="in-star"> Star</label>
+        </div>
+        <div class="row"><label class="grow slider-label">Inner <input type="range" id="in-inner" min="5" max="95" value="50"><span id="inner-val">50%</span></label></div>
+      </div>
+
+      <div class="prop-section" id="props-text">
+        <h3>Text</h3>
+        <div class="row">
+          <select id="in-font" class="grow">
+            <option>Arial</option><option>Helvetica</option><option>Verdana</option>
+            <option>Trebuchet MS</option><option>Georgia</option><option>Times New Roman</option>
+            <option>Courier New</option><option>Impact</option><option>system-ui</option>
+          </select>
+        </div>
+        <div class="row">
+          <label>Size <input type="number" id="in-fsize" min="4" max="600"></label>
+          <button class="mini-btn" id="btn-bold" title="Bold"><b>B</b></button>
+          <button class="mini-btn" id="btn-italic" title="Italic"><i>I</i></button>
+          <select id="in-talign">
+            <option value="left">Left</option><option value="center">Center</option><option value="right">Right</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="prop-section" id="props-fill">
+        <h3>Fill</h3>
+        <div class="row seg" id="fill-type-seg">
+          <button data-filltype="none" title="No fill">∅</button>
+          <button data-filltype="solid" title="Solid">■</button>
+          <button data-filltype="linear" title="Linear gradient">▤</button>
+          <button data-filltype="radial" title="Radial gradient">◎</button>
+          <button data-filltype="mesh" title="Mesh fill">⊞</button>
+        </div>
+        <div class="row" id="fill-solid-row"><label class="grow">Color <input type="color" id="in-fill-color"></label></div>
+        <div id="fill-grad-rows">
+          <div class="row">
+            <label class="grow">From <input type="color" id="in-grad-a"></label>
+            <label class="grow">To <input type="color" id="in-grad-b"></label>
+          </div>
+          <div class="row" id="grad-angle-row"><label class="grow slider-label">Angle <input type="range" id="in-grad-angle" min="0" max="360"><span id="angle-val">90°</span></label></div>
+        </div>
+      </div>
+
+      <div class="prop-section" id="props-mesh">
+        <h3>Mesh Fill</h3>
+        <div class="row">
+          <label>Rows <input type="number" id="in-mesh-rows" min="2" max="10" value="3"></label>
+          <label>Cols <input type="number" id="in-mesh-cols" min="2" max="10" value="3"></label>
+        </div>
+        <div class="row">
+          <label class="grow">Node colour <input type="color" id="in-mesh-color"></label>
+        </div>
+        <div class="row"><small class="hint">Pick the Mesh tool (M), then drag nodes and recolour them.</small></div>
+      </div>
+
+      <div class="prop-section" id="props-transparency">
+        <h3>Transparency</h3>
+        <div class="row seg" id="transp-seg">
+          <button data-transp="none" title="Opaque">∅</button>
+          <button data-transp="fade" title="Fade out">◢</button>
+          <button data-transp="fade-in" title="Fade in">◣</button>
+          <button data-transp="vignette" title="Vignette">◉</button>
+        </div>
+      </div>
+
+      <div class="prop-section" id="props-fountain">
+        <h3>Fountain Fill</h3>
+        <div id="grad-ramp-wrap">
+          <div id="grad-ramp" title="Double-click the ramp to add a stop"></div>
+          <div id="grad-handles"></div>
+        </div>
+        <div class="row">
+          <label>Stop <input type="color" id="in-stop-color"></label>
+          <label>Pos <input type="number" id="in-stop-pos" min="0" max="100"></label>
+          <button class="mini-btn" id="btn-grad-reverse" title="Reverse gradient">⇄</button>
+        </div>
+        <div class="row">
+          <select id="in-grad-preset" class="grow"><option value="">Presets…</option></select>
+        </div>
+      </div>
+
+      <div class="prop-section" id="props-stroke">
+        <h3>Stroke</h3>
+        <div class="row">
+          <label class="chk"><input type="checkbox" id="in-stroke-on"> On</label>
+          <input type="color" id="in-stroke-color">
+          <label>W <input type="number" id="in-stroke-w" min="0" max="200" step="0.5"></label>
+        </div>
+        <div class="row">
+          <select id="in-stroke-style" class="grow">
+            <option value="solid">Solid</option><option value="dashed">Dashed</option><option value="dotted">Dotted</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="prop-section" id="props-color">
+        <h3>Colour</h3>
+        <div class="row">
+          <label class="grow">Hex <input type="text" id="in-hex" maxlength="7" spellcheck="false"></label>
+        </div>
+        <div class="row cmyk-row">
+          <label>C <input type="number" id="in-c" min="0" max="100"></label>
+          <label>M <input type="number" id="in-m" min="0" max="100"></label>
+          <label>Y <input type="number" id="in-y" min="0" max="100"></label>
+          <label>K <input type="number" id="in-k" min="0" max="100"></label>
+        </div>
+        <div class="row cmyk-row">
+          <label>H <input type="number" id="in-hh" min="0" max="360"></label>
+          <label>S <input type="number" id="in-ss" min="0" max="100"></label>
+          <label>B <input type="number" id="in-bb" min="0" max="100"></label>
+        </div>
+      </div>
+
+      <div class="prop-section" id="props-shaping">
+        <h3>Shaping</h3>
+        <div class="row btn-row wrap">
+          <button data-cmd="shape-weld" title="Weld — merge into one outline">Weld</button>
+          <button data-cmd="shape-trim" title="Trim — front object cuts the ones behind">Trim</button>
+          <button data-cmd="shape-intersect" title="Intersect — keep only the overlap">Intersect</button>
+          <button data-cmd="shape-exclude" title="Exclude — remove the overlap">Exclude</button>
+          <button data-cmd="shape-fmb" title="Front minus back">Front−Back</button>
+          <button data-cmd="shape-bmf" title="Back minus front">Back−Front</button>
+          <button data-cmd="shape-simplify" title="Remove hidden overlapped areas">Simplify</button>
+          <button data-cmd="shape-boundary" title="Create an outline around everything selected">Boundary</button>
+        </div>
+      </div>
+
+      <div class="prop-section" id="props-contour">
+        <h3>Contour &amp; Blend</h3>
+        <div class="row">
+          <label>Steps <input type="number" id="in-contour-steps" min="1" max="20" value="3"></label>
+          <label>Offset <input type="number" id="in-contour-gap" min="0.5" max="200" step="0.5" value="8"></label>
+        </div>
+        <div class="row btn-row">
+          <button id="btn-contour-out">Contour Outside</button>
+          <button id="btn-contour-in">Contour Inside</button>
+        </div>
+        <div class="row">
+          <label>Blend steps <input type="number" id="in-blend-steps" min="1" max="60" value="6"></label>
+          <button id="btn-blend">Blend</button>
+        </div>
+      </div>
+
+      <div class="prop-section" id="props-distort">
+        <h3>Distort</h3>
+        <div class="row btn-row">
+          <button data-cmd="envelope">Envelope</button>
+          <button data-cmd="perspective">Perspective</button>
+        </div>
+        <div class="row">
+          <label>Rough <input type="number" id="in-rough-amt" min="0.5" max="200" step="0.5" value="6"></label>
+          <label>Freq <input type="number" id="in-rough-freq" min="1" max="60" value="8"></label>
+          <button id="btn-roughen">Roughen</button>
+        </div>
+        <div class="row">
+          <label>Twirl° <input type="number" id="in-twirl-deg" min="-720" max="720" step="5" value="45"></label>
+          <button id="btn-twirl">Twirl</button>
+        </div>
+      </div>
+
+      <div class="prop-section" id="props-bitmap">
+        <h3>Bitmap</h3>
+        <div class="row btn-row">
+          <button data-cmd="trace">PowerTRACE…</button>
+          <button data-cmd="trace-quick">Quick Trace</button>
+        </div>
+      </div>
+
+      <div class="prop-section" id="props-textpath">
+        <h3>Text on Path</h3>
+        <div class="row"><label class="grow slider-label">Offset <input type="range" id="in-path-offset" min="0" max="100" value="0"><span id="path-offset-val">0%</span></label></div>
+        <div class="row">
+          <select id="in-path-side" class="grow">
+            <option value="above">Above path</option>
+            <option value="below">Below path</option>
+          </select>
+          <button class="mini-btn" data-cmd="text-off-path" title="Detach from path">✕</button>
+        </div>
+      </div>
+
+      <div class="prop-section" id="props-effects">
+        <h3>Effects</h3>
+        <div class="row">
+          <label class="chk"><input type="checkbox" id="in-shadow-on"> Drop shadow</label>
+          <input type="color" id="in-shadow-color">
+        </div>
+        <div class="row" id="shadow-rows">
+          <label>X <input type="number" id="in-shadow-x" step="1" value="4"></label>
+          <label>Y <input type="number" id="in-shadow-y" step="1" value="4"></label>
+          <label>Blur <input type="number" id="in-shadow-blur" min="0" step="1" value="8"></label>
+        </div>
+        <div class="row"><label class="grow slider-label">Blur <input type="range" id="in-blur" min="0" max="40" value="0" step="0.5"><span id="blur-val">0</span></label></div>
+      </div>
+
+    </div>
+
+    <div id="layers-block">
+      <h3>Layers <span id="layer-count"></span></h3>
+      <ul id="layers"></ul>
+    </div>
+  </aside>
+</div>
+
+<div id="palette-bar">
+  <div id="palette"></div>
+</div>
+
+<footer id="statusbar">
+  <span id="st-hint"></span>
+  <span class="grow"></span>
+  <span id="st-sel"></span>
+  <span id="st-pos">0, 0</span>
+</footer>
+
+<input type="file" id="file-open" hidden accept=".json,.graphene,application/json">
+<input type="file" id="file-image" hidden accept="image/png,image/jpeg,image/webp,image/gif">
+<input type="file" id="file-svg" hidden accept=".svg,image/svg+xml">
+
+<div id="ctx-menu" hidden></div>
+
+<div id="pdf-modal" hidden>
+  <div id="trace-card">
+    <h2>Export PDF — print production</h2>
+    <p class="dim">Real vector PDF with selectable text and scalable curves.</p>
+    <div class="trace-row">
+      <label>Colour</label>
+      <select id="pdf-cs">
+        <option value="cmyk">CMYK (print)</option>
+        <option value="rgb">RGB (screen)</option>
+      </select>
+    </div>
+    <div class="trace-row">
+      <label>Bleed (pt)</label>
+      <input type="number" id="pdf-bleed" min="0" max="72" step="1" value="0" style="flex:1">
+    </div>
+    <div class="trace-row">
+      <label class="chk"><input type="checkbox" id="pdf-marks"> Crop marks</label>
+      <label class="chk"><input type="checkbox" id="pdf-allpages" checked> All pages</label>
+    </div>
+    <div class="trace-actions">
+      <button id="pdf-cancel">Cancel</button>
+      <button id="pdf-run" class="primary">Export PDF</button>
+    </div>
+  </div>
+</div>
+
+<div id="trace-modal" hidden>
+  <div id="trace-card">
+    <h2>PowerTRACE — Bitmap to Vector</h2>
+    <p class="dim">Converts the selected image into editable vector paths.</p>
+    <div class="trace-row">
+      <label>Mode</label>
+      <select id="trace-mode">
+        <option value="color">Colour artwork</option>
+        <option value="bw">Silhouette / line art</option>
+      </select>
+    </div>
+    <div class="trace-row" id="trace-color-row">
+      <label>Colours</label>
+      <input type="range" id="trace-colors" min="2" max="48" value="12">
+      <span id="trace-colors-val">12</span>
+    </div>
+    <div class="trace-row" id="trace-bw-row" style="display:none">
+      <label>Threshold</label>
+      <input type="range" id="trace-threshold" min="1" max="254" value="128">
+      <span id="trace-threshold-val">128</span>
+    </div>
+    <div class="trace-row">
+      <label>Detail</label>
+      <input type="range" id="trace-detail" min="0.2" max="6" step="0.2" value="1">
+      <span id="trace-detail-val">1.0</span>
+    </div>
+    <div class="trace-row">
+      <label class="chk"><input type="checkbox" id="trace-smooth" checked> Smooth curves</label>
+      <label class="chk"><input type="checkbox" id="trace-replace" checked> Replace original</label>
+    </div>
+    <div class="trace-actions">
+      <button id="trace-cancel">Cancel</button>
+      <button id="trace-run" class="primary">Trace</button>
+    </div>
+  </div>
+</div>
+
+<div id="modal" hidden>
+  <div id="modal-card">
+    <h2>Keyboard Shortcuts</h2>
+    <div id="shortcut-grid">
+      <b>V</b><span>Select tool</span>
+      <b>A</b><span>Node tool (edit bezier anchors)</span>
+      <b>P</b><span>Pen (click = corner, drag = curve, Enter/dbl-click = finish)</span>
+      <b>B</b><span>Pencil (freehand, auto-smoothed)</span>
+      <b>R / E / L</b><span>Rectangle / Ellipse / Line</span>
+      <b>G / S</b><span>Polygon / Star</span>
+      <b>T</b><span>Text (Esc or click outside to finish editing)</span>
+      <b>H / Space</b><span>Pan canvas</span>
+      <b>Scroll</b><span>Zoom at cursor</span>
+      <b>Ctrl+Z / Ctrl+Shift+Z</b><span>Undo / Redo</span>
+      <b>Ctrl+C/X/V/D</b><span>Copy / Cut / Paste / Duplicate</span>
+      <b>Ctrl+G / Ctrl+Shift+G</b><span>Group / Ungroup</span>
+      <b>[ / ]</b><span>Send to back / bring to front</span>
+      <b>Arrows</b><span>Nudge 1px (Shift = 10px)</span>
+      <b>Shift while drawing</b><span>Constrain square / circle / 45°</span>
+      <b>Shift while resizing</b><span>Uniform scale</span>
+      <b>Del</b><span>Delete selection (or anchor in node mode)</span>
+      <b>1 / Shift+1</b><span>Zoom 100% / fit page</span>
+      <b>Ctrl+L / Ctrl+K</b><span>Combine paths / break apart</span>
+      <b>Ctrl+R</b><span>Toggle rulers (drag from a ruler to add a guide)</span>
+      <b>Ctrl+2</b><span>Lock selection</span>
+      <b>Right-click</b><span>Context menu</span>
+      <b>Drag &amp; drop / Ctrl+V</b><span>Import images (PNG, JPG, SVG) onto the canvas</span>
+      <b>Ctrl+W</b><span>Weld selected shapes (boolean union)</span>
+      <b>Ctrl+Y</b><span>Wireframe / outline view</span>
+      <b>Alt+click +</b><span>Duplicate the current page</span>
+      <b>Palette click</b><span>Set fill · Shift+click sets stroke</span>
+      <b>K / X / I</b><span>Knife (slice) · Eraser · Eyedropper</span>
+      <b>[ / ] with eraser</b><span>Shrink / grow the eraser brush</span>
+      <b>Shift with knife</b><span>Constrain the cut to horizontal / vertical</span>
+      <b>Enter / Esc in envelope</b><span>Apply / cancel the distortion</span>
+    </div>
+    <button id="modal-close">Close</button>
+  </div>
+</div>
+
+<script src="js/splash.js"></script>
+<script src="js/core.js"></script>
+<script src="js/render.js"></script>
+<script src="js/boolean.js"></script>
+<script src="js/tools.js"></script>
+<script src="js/ui.js"></script>
+<script src="js/extras.js"></script>
+<script src="js/pro.js"></script>
+<script src="js/distort.js"></script>
+<script src="js/trace.js"></script>
+<script src="js/png.js"></script>
+<script src="js/pdf.js"></script>
+<script src="js/arrange.js"></script>
+<script src="js/fountain.js"></script>
+<script src="js/mesh.js"></script>
+<script>
+/* Everything has parsed and the first render has run: retire the splash.
+   Wrapped so a missing splash.js can never stop the service worker from
+   registering, and vice versa. */
+try { if (typeof splashReady === "function") splashReady(); } catch (e) {}
+
+if ("serviceWorker" in navigator && location.protocol !== "file:") {
+  navigator.serviceWorker.register("sw.js").catch(() => {});
+}
+</script>
+</body>
+</html>

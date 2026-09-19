@@ -1,0 +1,280 @@
+name: Build installers
+
+# Produces the real, installable artifacts:
+#   Windows -> Graphene-<ver>-win-x64.exe (NSIS installer) + portable .exe
+#   Linux   -> Graphene-<ver>-linux-x86_64.AppImage + .deb
+#   macOS   -> Graphene-<ver>-mac-x64.dmg and -arm64.dmg
+#
+# These cannot be built in the dev sandbox: electron-builder must download the
+# Electron runtime from objects.githubusercontent.com, which is blocked there.
+# GitHub's own runners have no such restriction, and macOS needs a Mac anyway.
+#
+# Triggered on pushes to arena/** so installers are produced from the working
+# branch directly - no merge to the default branch required.
+
+on:
+  push:
+    branches: ["arena/**"]    # build on every push to the working branch
+    tags: ["v*"]
+  workflow_dispatch:          # and on demand from the Actions tab
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "20", cache: "npm" }
+      - run: npm ci --ignore-scripts
+
+      - name: Environment
+        run: |
+          node -v && npm -v
+          echo "openssl: $(openssl version 2>&1 || echo MISSING)"
+          echo "git:     $(git --version)"
+
+      # Run each suite separately so a failure names itself in the summary,
+      # instead of collapsing into a single opaque "exit code 1".
+      # GitHub runners ship Chrome, so the real-browser suite runs here even
+      # though the dev sandbox cannot download a browser.
+      - name: Real-browser end-to-end
+        env:
+          CHROME_PATH: /usr/bin/google-chrome
+        run: |
+          if [ ! -x "$CHROME_PATH" ]; then
+            echo "::warning::Chrome not found at $CHROME_PATH - skipping browser E2E"
+            exit 0
+          fi
+          set +e
+          node test/browser.e2e.js 2>&1 | tee /tmp/e2e.log
+          code=${PIPESTATUS[0]}
+          if [ $code -ne 0 ]; then
+            grep -aE "FAIL|threw|SKIP" /tmp/e2e.log | head -12 | while IFS= read -r l; do
+              echo "::error::E2E $(printf '%s' "$l" | cut -c1-360)"
+            done
+          fi
+          exit $code
+
+      - name: Run the full suite
+        run: |
+          set +e
+          failed=""
+          for f in test/*.test.js test/app.smoke.js; do
+            [ -f "$f" ] || continue
+            echo "::group::$f"
+            node "$f"
+            code=$?
+            echo "::endgroup::"
+            if [ $code -ne 0 ]; then
+              failed="$failed $f"
+              echo "::error file=$f::suite failed with exit $code"
+            fi
+          done
+          if [ -n "$failed" ]; then
+            echo "FAILED SUITES:$failed"
+            exit 1
+          fi
+          echo "All suites passed."
+
+  build:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: --win
+            artifact: graphene-windows
+          - os: ubuntu-latest
+            target: --linux
+            artifact: graphene-linux
+          - os: macos-latest
+            target: --mac
+            artifact: graphene-macos
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "20", cache: "npm" }
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Signing is optional: with the secrets present the build is signed with
+      # com.n_o_group.graphene, without them it still produces working
+      # (unsigned) installers, so forks and PRs are not blocked.
+      # Windows builds are signed with the repository keystore when the secrets
+      # exist. When they do not, a keystore is generated from the committed
+      # make-keystore.sh so the installer still carries a verifiable signature
+      # and a stable com.n_o_group.graphene identity. A generated certificate
+      # is self-signed and does NOT clear SmartScreen - only a purchased CA
+      # certificate does - but it is strictly better than shipping unsigned.
+      - name: Prepare signing identity
+        id: signing
+        shell: bash
+        run: |
+          if [ -n "${{ secrets.CSC_LINK }}" ]; then
+            echo "Signing with the repository keystore secret."
+            echo "mode=secret" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "${{ runner.os }}" != "Windows" ]; then
+            echo "No secret and not Windows: nothing to sign."
+            echo "mode=none" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "::notice::CSC_LINK not set - generating a self-signed keystore for this build."
+          if ! command -v openssl >/dev/null 2>&1; then
+            echo "::warning::openssl unavailable - building unsigned."
+            echo "mode=none" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          KEYSTORE_PASSWORD="ci-$(openssl rand -hex 16)"
+          export KEYSTORE_PASSWORD
+          echo "::add-mask::$KEYSTORE_PASSWORD"
+          # RUNNER_TEMP is a Windows path (D:\a\_temp) under Git Bash; mixing it
+          # with forward slashes produced 'invalid path D:\a\_temp\keys/...'.
+          # Normalise to a POSIX path so openssl and git both accept it.
+          KEYDIR="$(cd "$RUNNER_TEMP" && pwd)/graphene-keys"
+          mkdir -p "$KEYDIR"
+          if ! OUT_DIR="$KEYDIR" bash build/signing/make-keystore.sh 2>/tmp/ks.err; then
+            echo "::warning::keystore generation failed - building unsigned."
+            head -c 900 /tmp/ks.err | while IFS= read -r l; do
+              echo "::error::KEYSTORE $(printf '%s' "$l" | cut -c1-300)"
+            done
+            echo "mode=none" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if ! bash build/signing/verify-keystore.sh "$KEYDIR/graphene.p12"; then
+            echo "::warning::keystore failed verification - building unsigned."
+            echo "mode=none" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # base64 -w0 is GNU-only; node is guaranteed present on every runner
+          B64=$(node -e "process.stdout.write(require('fs').readFileSync(process.argv[1]).toString('base64'))" "$KEYDIR/graphene.p12")
+          {
+            echo "CSC_LINK=$B64"
+            echo "CSC_KEY_PASSWORD=$KEYSTORE_PASSWORD"
+          } >> "$GITHUB_ENV"
+          echo "mode=generated" >> "$GITHUB_OUTPUT"
+          # Publish the fingerprint so a download can be checked against the
+          # signature that actually produced it.
+          FP=$(openssl x509 -in "$KEYDIR/graphene.crt" -noout -fingerprint -sha256 | cut -d= -f2)
+          echo "::notice::SIGNING-CERT sha256 $FP"
+          cp "$KEYDIR/graphene.crt" "$KEYDIR/../graphene-signing-cert.crt"
+
+      - name: Verify build inputs
+        shell: bash
+        run: |
+          node -e "const p=require('./package.json');console.log('appId   ',p.build.appId);console.log('product ',p.build.productName);console.log('version ',p.version)"
+          for f in build/icon.ico build/icon.icns build/icons/256x256.png desktop/main.js desktop/preload.js desktop/splash.html; do
+            if [ -f "$f" ]; then echo "  ok   $f"; else echo "  MISSING $f"; exit 1; fi
+          done
+          node -e "require('fs').accessSync('node_modules/electron');console.log('electron package present')"
+
+      # Capture output to a file and echo the tail into the job summary, which
+      # is readable through the API even when the raw log blobs are not.
+      - name: Build installer
+        id: ebuild
+        shell: bash
+        run: |
+          set -o pipefail
+          npx electron-builder ${{ matrix.target }} --publish never --config.npmRebuild=false 2>&1 | tee /tmp/eb.log
+          echo "code=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Upload the build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: buildlog-${{ matrix.artifact }}
+          path: /tmp/eb.log
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Report build failure
+        if: failure()
+        shell: bash
+        run: |
+          {
+            echo "### electron-builder failed on ${{ matrix.os }}"
+            echo ""
+            echo '```'
+            tail -n 60 /tmp/eb.log 2>/dev/null || echo "no log captured"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "---- tail of electron-builder output ----"
+          tail -n 60 /tmp/eb.log 2>/dev/null || true
+          # Annotations are readable through the API even when log blobs are
+          # not, so emit the meaningful lines as individual notices.
+          grep -aE "⨯|Error|error|cannot|Cannot|ENOENT|not found|failed" /tmp/eb.log 2>/dev/null \
+            | head -12 \
+            | while IFS= read -r line; do
+                clean=$(printf '%s' "$line" | tr -d '\r' | cut -c1-380)
+                echo "::error::EB ${clean}"
+              done || true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Both are empty when the secrets are absent, which electron-builder
+          # treats as "do not sign" rather than as an error.
+          # secrets win; otherwise the generated keystore exported to GITHUB_ENV
+          CSC_LINK: ${{ secrets.CSC_LINK || env.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD || env.CSC_KEY_PASSWORD }}
+          # macOS needs a real Developer ID from the keychain; never auto-hunt
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+
+      - name: Checksums for every artifact
+        shell: bash
+        run: |
+          cd dist
+          for f in *.exe *.AppImage *.deb *.dmg *.zip; do
+            [ -f "$f" ] || continue
+            if command -v sha256sum >/dev/null; then sha256sum "$f"; else shasum -a 256 "$f"; fi
+          done | tee SHA256SUMS.txt
+
+      # List the artifacts as annotations so the exact filenames are visible
+      # without downloading hundreds of megabytes.
+      - name: Announce artifacts
+        if: success()
+        shell: bash
+        run: |
+          cd dist
+          for f in *.exe *.AppImage *.deb *.dmg *.zip *.blockmap; do
+            [ -f "$f" ] || continue
+            sz=$(du -h "$f" | cut -f1)
+            echo "::notice::ARTIFACT $f ($sz)"
+          done
+
+      - name: Show what was produced
+        if: always()
+        shell: bash
+        run: |
+          ls -lah dist/ 2>/dev/null || echo "no dist directory"
+          find dist -maxdepth 2 -name "*.log" -exec sh -c 'echo "--- {} ---"; cat "{}"' \; 2>/dev/null || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            ${{ runner.temp }}/graphene-signing-cert.crt
+            dist/*.exe
+            dist/*.AppImage
+            dist/*.deb
+            dist/*.dmg
+            dist/*.zip
+            dist/latest*.yml
+            dist/SHA256SUMS.txt
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { path: artifacts }
+      - name: Attach the installers to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*
+          generate_release_notes: true
