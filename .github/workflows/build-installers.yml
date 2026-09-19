@@ -134,7 +134,11 @@ jobs:
           KEYSTORE_PASSWORD="ci-$(openssl rand -hex 16)"
           export KEYSTORE_PASSWORD
           echo "::add-mask::$KEYSTORE_PASSWORD"
-          KEYDIR="$RUNNER_TEMP/keys"
+          # RUNNER_TEMP is a Windows path (D:\a\_temp) under Git Bash; mixing it
+          # with forward slashes produced 'invalid path D:\a\_temp\keys/...'.
+          # Normalise to a POSIX path so openssl and git both accept it.
+          KEYDIR="$(cd "$RUNNER_TEMP" && pwd)/graphene-keys"
+          mkdir -p "$KEYDIR"
           if ! OUT_DIR="$KEYDIR" bash build/signing/make-keystore.sh 2>/tmp/ks.err; then
             echo "::warning::keystore generation failed - building unsigned."
             head -c 900 /tmp/ks.err | while IFS= read -r l; do
@@ -157,7 +161,7 @@ jobs:
           # signature that actually produced it.
           FP=$(openssl x509 -in "$KEYDIR/graphene.crt" -noout -fingerprint -sha256 | cut -d= -f2)
           echo "::notice::SIGNING-CERT sha256 $FP"
-          cp "$KEYDIR/graphene.crt" "$RUNNER_TEMP/graphene-signing-cert.crt"
+          cp "$KEYDIR/graphene.crt" "$KEYDIR/../graphene-signing-cert.crt"
 
       - name: Verify build inputs
         shell: bash
