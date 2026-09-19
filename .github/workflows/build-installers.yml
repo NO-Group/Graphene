@@ -115,6 +115,15 @@ jobs:
           npx electron-builder ${{ matrix.target }} --publish never --config.npmRebuild=false 2>&1 | tee /tmp/eb.log
           echo "code=$?" >> "$GITHUB_OUTPUT"
 
+      - name: Upload the build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: buildlog-${{ matrix.artifact }}
+          path: /tmp/eb.log
+          if-no-files-found: warn
+          retention-days: 7
+
       - name: Report build failure
         if: failure()
         shell: bash
