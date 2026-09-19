@@ -163,6 +163,19 @@ jobs:
             if command -v sha256sum >/dev/null; then sha256sum "$f"; else shasum -a 256 "$f"; fi
           done | tee SHA256SUMS.txt
 
+      # List the artifacts as annotations so the exact filenames are visible
+      # without downloading hundreds of megabytes.
+      - name: Announce artifacts
+        if: success()
+        shell: bash
+        run: |
+          cd dist
+          for f in *.exe *.AppImage *.deb *.dmg *.zip *.blockmap; do
+            [ -f "$f" ] || continue
+            sz=$(du -h "$f" | cut -f1)
+            echo "::notice::ARTIFACT $f ($sz)"
+          done
+
       - name: Show what was produced
         if: always()
         shell: bash
