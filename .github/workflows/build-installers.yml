@@ -8,11 +8,15 @@ name: Build installers
 # These cannot be built in the dev sandbox: electron-builder must download the
 # Electron runtime from objects.githubusercontent.com, which is blocked there.
 # GitHub's own runners have no such restriction, and macOS needs a Mac anyway.
+#
+# Triggered on pushes to arena/** so installers are produced from the working
+# branch directly - no merge to the default branch required.
 
 on:
   push:
+    branches: ["arena/**"]    # build on every push to the working branch
     tags: ["v*"]
-  workflow_dispatch:          # lets you build on demand from the Actions tab
+  workflow_dispatch:          # and on demand from the Actions tab
 
 permissions:
   contents: write
