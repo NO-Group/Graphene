@@ -72,6 +72,30 @@ function runCommand(cmd) {
     case "flip-h": applyToSelection(o => flipObj(o, true), "flip"); break;
     case "flip-v": applyToSelection(o => flipObj(o, false), "flip"); break;
     case "to-path": convertSelectionToPath(); break;
+
+    /* align & distribute */
+    case "align-left": alignObjects("left"); break;
+    case "align-hcenter": alignObjects("hcenter"); break;
+    case "align-right": alignObjects("right"); break;
+    case "align-top": alignObjects("top"); break;
+    case "align-vcenter": alignObjects("vcenter"); break;
+    case "align-bottom": alignObjects("bottom"); break;
+    case "dist-h": distributeObjects("hcenter"); break;
+    case "dist-v": distributeObjects("vcenter"); break;
+    case "dist-hgap": distributeObjects("hgap"); break;
+    case "dist-vgap": distributeObjects("vgap"); break;
+    case "same-width": equalizeSize("width"); break;
+    case "same-height": equalizeSize("height"); break;
+    case "same-size": equalizeSize("both"); break;
+
+    /* node editing */
+    case "node-add": addNodes(); break;
+    case "node-corner": setNodeType("corner"); break;
+    case "node-smooth": setNodeType("smooth"); break;
+    case "node-symmetric": setNodeType("symmetric"); break;
+    case "node-join": joinNodes(); break;
+    case "node-break": breakNodes(); break;
+    case "path-reverse": reversePath(); break;
     case "combine": combinePaths(); break;
     case "break-apart": breakApart(); break;
     case "lock": lockSelection(); break;
@@ -708,6 +732,17 @@ window.addEventListener("keydown", e => {
     if (k === "[") { e.preventDefault(); reorder("backward"); return; }
     if (e.altKey && k === "n") { e.preventDefault(); newDocument(); return; }
     if (e.shiftKey && k === "c") { e.preventDefault(); convertSelectionToPath(); return; }
+    /* align: Ctrl+Shift+L/E/R and T/M/B, matching CorelDRAW's letters */
+    if (e.shiftKey && k === "l") { e.preventDefault(); alignObjects("left"); return; }
+    if (e.shiftKey && k === "e") { e.preventDefault(); alignObjects("hcenter"); return; }
+    if (e.shiftKey && k === "r") { e.preventDefault(); alignObjects("right"); return; }
+    if (e.shiftKey && k === "t") { e.preventDefault(); alignObjects("top"); return; }
+    if (e.shiftKey && k === "m") { e.preventDefault(); alignObjects("vcenter"); return; }
+    if (e.shiftKey && k === "b") { e.preventDefault(); alignObjects("bottom"); return; }
+    /* node types, only meaningful while the node tool has a path open */
+    if (k === "1") { e.preventDefault(); setNodeType("corner"); return; }
+    if (k === "3") { e.preventDefault(); setNodeType("smooth"); return; }
+    if (k === "4") { e.preventDefault(); setNodeType("symmetric"); return; }
     if (k === "l") { e.preventDefault(); combinePaths(); return; }
     if (k === "k") { e.preventDefault(); breakApart(); return; }
     if (k === "r") { e.preventDefault(); setRulers(!App.rulers); return; }

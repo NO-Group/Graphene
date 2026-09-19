@@ -15,6 +15,7 @@ const ASSETS = [
   "./js/trace.js",
   "./js/png.js",
   "./js/pdf.js",
+  "./js/arrange.js",
   "./js/fountain.js",
   "./js/mesh.js",
   "./manifest.json",

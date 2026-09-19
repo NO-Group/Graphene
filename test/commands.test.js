@@ -52,7 +52,7 @@ win.addEventListener("error", e => asyncErrors.push((e.error && e.error.message)
 win.onunhandledrejection = e => asyncErrors.push("unhandled rejection: " + e.reason);
 
 for (const s of ["js/core.js", "js/render.js", "js/boolean.js", "js/tools.js", "js/ui.js", "js/extras.js",
-                 "js/pro.js", "js/distort.js", "js/trace.js", "js/png.js", "js/pdf.js", "js/fountain.js", "js/mesh.js"]) {
+                 "js/pro.js", "js/distort.js", "js/trace.js", "js/png.js", "js/pdf.js", "js/fountain.js", "js/mesh.js", "js/arrange.js"]) {
   const el = win.document.createElement("script");
   el.textContent = fs.readFileSync(path.join(ROOT, s), "utf8");
   win.document.body.appendChild(el);

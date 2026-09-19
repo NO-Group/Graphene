@@ -24,7 +24,7 @@ const t = (name, cond, extra) => {
 
 const SCRIPTS = ["js/core.js", "js/render.js", "js/boolean.js", "js/tools.js", "js/ui.js",
                  "js/extras.js", "js/pro.js", "js/distort.js", "js/trace.js", "js/png.js",
-                 "js/pdf.js", "js/fountain.js", "js/mesh.js"];
+                 "js/pdf.js", "js/fountain.js", "js/mesh.js", "js/arrange.js"];
 
 function boot(storageFactory) {
   const dom = new JSDOM(fs.readFileSync(path.join(ROOT, "index.html"), "utf8"), {

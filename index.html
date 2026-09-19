@@ -76,6 +76,43 @@
     </div>
 
     <div class="menu" data-menu>
+      <button class="menu-title">Arrange</button>
+      <div class="dropdown">
+        <button data-cmd="align-left">Align Left <kbd>Ctrl+Shift+L</kbd></button>
+        <button data-cmd="align-hcenter">Align Centres Vertically <kbd>Ctrl+Shift+E</kbd></button>
+        <button data-cmd="align-right">Align Right <kbd>Ctrl+Shift+R</kbd></button>
+        <hr>
+        <button data-cmd="align-top">Align Top <kbd>Ctrl+Shift+T</kbd></button>
+        <button data-cmd="align-vcenter">Align Centres Horizontally <kbd>Ctrl+Shift+M</kbd></button>
+        <button data-cmd="align-bottom">Align Bottom <kbd>Ctrl+Shift+B</kbd></button>
+        <hr>
+        <button data-cmd="dist-h">Distribute Centres Horizontally</button>
+        <button data-cmd="dist-v">Distribute Centres Vertically</button>
+        <button data-cmd="dist-hgap">Distribute Gaps Horizontally</button>
+        <button data-cmd="dist-vgap">Distribute Gaps Vertically</button>
+        <hr>
+        <button data-cmd="same-width">Same Width</button>
+        <button data-cmd="same-height">Same Height</button>
+        <button data-cmd="same-size">Same Size</button>
+      </div>
+    </div>
+
+    <div class="menu" data-menu>
+      <button class="menu-title">Nodes</button>
+      <div class="dropdown">
+        <button data-cmd="node-add">Add Node <kbd>+</kbd></button>
+        <button data-cmd="node-break">Break Apart at Node</button>
+        <button data-cmd="node-join">Join Nodes</button>
+        <hr>
+        <button data-cmd="node-corner">To Corner <kbd>Ctrl+1</kbd></button>
+        <button data-cmd="node-smooth">To Smooth <kbd>Ctrl+3</kbd></button>
+        <button data-cmd="node-symmetric">To Symmetric <kbd>Ctrl+4</kbd></button>
+        <hr>
+        <button data-cmd="path-reverse">Reverse Path Direction</button>
+      </div>
+    </div>
+
+    <div class="menu" data-menu>
       <button class="menu-title">Shaping</button>
       <div class="dropdown">
         <button data-cmd="shape-weld">Weld <kbd>Ctrl+W</kbd></button>
@@ -597,6 +634,7 @@
 <script src="js/trace.js"></script>
 <script src="js/png.js"></script>
 <script src="js/pdf.js"></script>
+<script src="js/arrange.js"></script>
 <script src="js/fountain.js"></script>
 <script src="js/mesh.js"></script>
 <script>
