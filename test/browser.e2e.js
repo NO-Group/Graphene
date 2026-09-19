@@ -130,26 +130,43 @@ function findBrowser() {
     await page.evaluate(() => {
       App.objects = []; App.selection = []; App.smartGuides = false;
       for (let i = 0; i < 600; i++) App.objects.push(makeRect((i * 37) % 900, (i * 53) % 600, 40, 30));
+      /* Drag the LAST object: it is painted on top, so the mousedown cannot be
+         intercepted by a sibling drawn over it. */
+      zoomFit();
       render(); updateUI();
       setTool("select");
-      App.selection = [App.objects[0].id];
+      App.selection = [App.objects[App.objects.length - 1].id];
       render();
     });
     const target = await page.evaluate(() => {
-      const o = App.objects[0];
+      const o = App.objects[App.objects.length - 1];
       const el = document.querySelector(`[data-id="${o.id}"]`);
+      if (!el) return { err: "no node" };
       const r = el.getBoundingClientRect();
-      return { x0: o.x, cx: r.left + r.width / 2, cy: r.top + r.height / 2 };
+      const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+      const hit = document.elementFromPoint(cx, cy);
+      return {
+        x0: o.x, cx, cy, zoom: App.zoom,
+        onScreen: r.width > 0 && r.height > 0 && cx > 0 && cy > 0 &&
+                  cx < innerWidth && cy < innerHeight,
+        hitId: hit ? (hit.dataset && hit.dataset.id) || hit.id || hit.tagName : "none",
+        wantId: o.id,
+      };
     });
+    t("the drag target is actually on screen", target.onScreen === true, JSON.stringify(target));
+    t("  …and is what the mouse would hit", target.hitId === target.wantId,
+      `point hits ${target.hitId}, wanted ${target.wantId}`);
     await page.mouse.move(target.cx, target.cy);
     await page.mouse.down();
     const t0 = Date.now();
     for (let i = 1; i <= 40; i++) await page.mouse.move(target.cx + i * 5, target.cy);
     await page.mouse.up();
     const elapsed = Date.now() - t0;
-    const moved = await page.evaluate(() => App.objects[0].x);
-    t("the object tracked a 40-step drag", Math.abs((moved - target.x0) - 200) < 3,
-      `moved ${Math.round(moved - target.x0)}px, expected 200`);
+    const moved = await page.evaluate(() => App.objects[App.objects.length - 1].x);
+    /* 200 screen px at the current zoom = 200/zoom world units */
+    const expected = 200 / (target.zoom || 1);
+    t("the object tracked a 40-step drag", Math.abs((moved - target.x0) - expected) < 3,
+      `moved ${Math.round(moved - target.x0)} world units, expected ${Math.round(expected)} (zoom ${target.zoom})`);
     t("  …and the drag stayed responsive", elapsed < 6000, elapsed + " ms for 40 moves");
 
     console.log("— exports work in a real browser —");
