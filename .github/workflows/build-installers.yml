@@ -105,8 +105,29 @@ jobs:
           done
           node -e "require('fs').accessSync('node_modules/electron');console.log('electron package present')"
 
+      # Capture output to a file and echo the tail into the job summary, which
+      # is readable through the API even when the raw log blobs are not.
       - name: Build installer
-        run: npx electron-builder ${{ matrix.target }} --publish never --config.npmRebuild=false
+        id: ebuild
+        shell: bash
+        run: |
+          set -o pipefail
+          npx electron-builder ${{ matrix.target }} --publish never --config.npmRebuild=false 2>&1 | tee /tmp/eb.log
+          echo "code=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Report build failure
+        if: failure()
+        shell: bash
+        run: |
+          {
+            echo "### electron-builder failed on ${{ matrix.os }}"
+            echo ""
+            echo '```'
+            tail -n 60 /tmp/eb.log 2>/dev/null || echo "no log captured"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "---- tail of electron-builder output ----"
+          tail -n 60 /tmp/eb.log 2>/dev/null || true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Both are empty when the secrets are absent, which electron-builder
