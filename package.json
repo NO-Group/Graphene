@@ -12,7 +12,8 @@
     "dist:mac": "electron-builder --mac",
     "dist:linux": "electron-builder --linux",
     "test": "node test/run.js",
-    "test:nodom": "GRAPHENE_SKIP_DOM=1 node test/run.js"
+    "test:nodom": "GRAPHENE_SKIP_DOM=1 node test/run.js",
+    "test:browser": "node test/browser.e2e.js"
   },
   "build": {
     "appId": "com.n_o_group.graphene",
@@ -99,7 +100,8 @@
   "devDependencies": {
     "electron": "^31.7.7",
     "electron-builder": "^24.13.3",
-    "jsdom": "^24.0.0"
+    "jsdom": "^24.0.0",
+    "puppeteer-core": "^23.0.0"
   },
   "optionalDependencies": {
     "electron": "^31.0.0",

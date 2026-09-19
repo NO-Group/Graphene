@@ -38,6 +38,18 @@ jobs:
 
       # Run each suite separately so a failure names itself in the summary,
       # instead of collapsing into a single opaque "exit code 1".
+      # GitHub runners ship Chrome, so the real-browser suite runs here even
+      # though the dev sandbox cannot download a browser.
+      - name: Real-browser end-to-end
+        env:
+          CHROME_PATH: /usr/bin/google-chrome
+        run: |
+          if [ -x "$CHROME_PATH" ]; then
+            node test/browser.e2e.js
+          else
+            echo "::warning::Chrome not found at $CHROME_PATH - skipping browser E2E"
+          fi
+
       - name: Run the full suite
         run: |
           set +e
@@ -86,15 +98,36 @@ jobs:
       # Signing is optional: with the secrets present the build is signed with
       # com.n_o_group.graphene, without them it still produces working
       # (unsigned) installers, so forks and PRs are not blocked.
-      - name: Report signing status
+      # Windows builds are signed with the repository keystore when the secrets
+      # exist. When they do not, a keystore is generated from the committed
+      # make-keystore.sh so the installer still carries a verifiable signature
+      # and a stable com.n_o_group.graphene identity. A generated certificate
+      # is self-signed and does NOT clear SmartScreen - only a purchased CA
+      # certificate does - but it is strictly better than shipping unsigned.
+      - name: Prepare signing identity
+        id: signing
         shell: bash
         run: |
           if [ -n "${{ secrets.CSC_LINK }}" ]; then
-            echo "Signing with the com.n_o_group.graphene keystore."
-          else
-            echo "::warning::CSC_LINK is not set - producing UNSIGNED installers."
-            echo "Add CSC_LINK and CSC_KEY_PASSWORD under Settings > Secrets > Actions to sign."
+            echo "Signing with the repository keystore secret."
+            echo "mode=secret" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+          if [ "${{ runner.os }}" != "Windows" ]; then
+            echo "No secret and not Windows: nothing to sign."
+            echo "mode=none" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "::notice::CSC_LINK not set - generating a self-signed keystore for this build."
+          export KEYSTORE_PASSWORD="ci-$(openssl rand -hex 16)"
+          OUT_DIR="$RUNNER_TEMP/keys" bash build/signing/make-keystore.sh
+          KEYSTORE_PASSWORD="$KEYSTORE_PASSWORD" bash build/signing/verify-keystore.sh "$RUNNER_TEMP/keys/graphene.p12"
+          echo "::add-mask::$KEYSTORE_PASSWORD"
+          {
+            echo "CSC_LINK=$(base64 -w0 "$RUNNER_TEMP/keys/graphene.p12")"
+            echo "CSC_KEY_PASSWORD=$KEYSTORE_PASSWORD"
+          } >> "$GITHUB_ENV"
+          echo "mode=generated" >> "$GITHUB_OUTPUT"
 
       - name: Verify build inputs
         shell: bash
@@ -149,10 +182,11 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Both are empty when the secrets are absent, which electron-builder
           # treats as "do not sign" rather than as an error.
-          CSC_LINK: ${{ secrets.CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-          # stop macOS hunting for a keychain identity that is not installed
-          CSC_IDENTITY_AUTO_DISCOVERY: ${{ secrets.CSC_LINK != '' }}
+          # secrets win; otherwise the generated keystore exported to GITHUB_ENV
+          CSC_LINK: ${{ secrets.CSC_LINK || env.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD || env.CSC_KEY_PASSWORD }}
+          # macOS needs a real Developer ID from the keychain; never auto-hunt
+          CSC_IDENTITY_AUTO_DISCOVERY: false
 
       - name: Checksums for every artifact
         shell: bash

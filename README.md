@@ -45,8 +45,11 @@ export KEYSTORE_PASSWORD='a-real-passphrase'
 ```
 
 Add `CSC_LINK` (base64 of the `.p12`) and `CSC_KEY_PASSWORD` as repository
-secrets and CI signs automatically; without them it still produces working
-unsigned installers. Full detail in `build/signing/README.md`.
+secrets and CI signs with your keystore. **Without them Windows builds are
+still signed**, using a keystore generated on the runner from
+`make-keystore.sh` and verified before use — self-signed, so it does not clear
+SmartScreen, but the installer carries a verifiable signature and the
+`com.n_o_group.graphene` identity rather than none at all. Full detail in `build/signing/README.md`.
 
 Building locally works the same way (`npm run dist:win`, `dist:linux`,
 `dist:mac`) wherever `objects.githubusercontent.com` is reachable — that host
@@ -243,7 +246,7 @@ Press `?` in the app for the full shortcut list.
 | `js/png.js` | DEFLATE **inflate + deflate** and a PNG decoder, all written from scratch: PNG artwork embeds losslessly and every exported stream is really compressed |
 | `sw.js` + `manifest.json` | Offline service worker + PWA install manifest |
 | `desktop/main.js` + `package.json` | Electron shell + electron-builder config for native Windows/macOS/Linux builds |
-| `test/` | 607 automated tests — boolean geometry, tracer, distortion, headless app smoke tests, simulated pointer interaction, service worker, storage resilience, full command sweep |
+| `test/` | 665 automated tests — boolean geometry, tracer, distortion, headless app smoke tests, simulated pointer interaction, service worker, storage resilience, full command sweep |
 
 ## Tests
 

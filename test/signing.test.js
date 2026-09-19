@@ -174,7 +174,15 @@ console.log("— CI wiring —");
   const wf = fs.readFileSync(path.join(ROOT, ".github", "workflows", "build-installers.yml"), "utf8");
   t("the workflow passes CSC_LINK to electron-builder", /CSC_LINK:\s*\$\{\{\s*secrets\.CSC_LINK/.test(wf));
   t("the workflow passes the key password", /CSC_KEY_PASSWORD:\s*\$\{\{\s*secrets\.CSC_KEY_PASSWORD/.test(wf));
-  t("unsigned builds still work (no hard failure)", /::warning::.*UNSIGNED/.test(wf));
+  /* A missing secret must never fail the build. Windows now falls back to a
+     generated keystore; other platforms simply build unsigned. */
+  t("a missing secret does not fail the build",
+    /secrets\.CSC_LINK\s*\|\|\s*env\.CSC_LINK/.test(wf));
+  t("Windows falls back to a generated keystore",
+    /make-keystore\.sh/.test(wf) && /mode=generated/.test(wf));
+  t("  …and the generated keystore is verified before use",
+    /verify-keystore\.sh/.test(wf));
+  t("  …with its password masked in the log", /::add-mask::/.test(wf));
   t("checksums are produced for every artifact", /SHA256SUMS\.txt/.test(wf));
   t("the suite runs before any installer is built", /needs:\s*test/.test(wf));
 }
