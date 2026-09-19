@@ -30,31 +30,58 @@ if [ "${#KEYSTORE_PASSWORD}" -lt 8 ]; then
 fi
 
 mkdir -p "$OUT_DIR"
-chmod 700 "$OUT_DIR"
+chmod 700 "$OUT_DIR" 2>/dev/null || true
 KEY="$OUT_DIR/$NAME.key"
 CRT="$OUT_DIR/$NAME.crt"
 P12="$OUT_DIR/$NAME.p12"
 
 echo "Generating a 4096-bit RSA key for $APP_ID ..."
-openssl req -x509 -newkey rsa:4096 -sha256 -days "$DAYS" \
+echo "  openssl: $(openssl version)"
+
+# -addext needs OpenSSL 1.1.1+. Git Bash on Windows can ship an older build,
+# where every -addext is rejected and the whole command fails. Write the
+# extensions to a config file instead, which every version understands.
+EXT_CFG="$OUT_DIR/.openssl-ext.cnf"
+cat > "$EXT_CFG" <<EXT
+[ req ]
+distinguished_name = dn
+x509_extensions    = v3
+prompt             = no
+
+[ dn ]
+CN = $CN
+O  = $ORG
+OU = $APP_ID
+C  = $COUNTRY
+emailAddress = $EMAIL
+
+[ v3 ]
+basicConstraints     = critical,CA:FALSE
+keyUsage             = critical,digitalSignature
+extendedKeyUsage     = codeSigning
+subjectAltName       = URI:$APP_ID,email:$EMAIL
+EXT
+
+if ! openssl req -x509 -newkey rsa:4096 -sha256 -days "$DAYS" \
   -keyout "$KEY" -out "$CRT" \
   -passout "pass:$KEYSTORE_PASSWORD" \
-  -subj "/CN=$CN/O=$ORG/OU=$APP_ID/C=$COUNTRY/emailAddress=$EMAIL" \
-  -addext "basicConstraints=critical,CA:FALSE" \
-  -addext "keyUsage=critical,digitalSignature" \
-  -addext "extendedKeyUsage=codeSigning" \
-  -addext "subjectAltName=URI:$APP_ID,email:$EMAIL" \
-  >/dev/null 2>&1
+  -config "$EXT_CFG" -extensions v3; then
+  echo "openssl req failed" >&2
+  exit 1
+fi
+rm -f "$EXT_CFG"
 
 echo "Bundling into PKCS#12 ..."
-openssl pkcs12 -export -out "$P12" \
+if ! openssl pkcs12 -export -out "$P12" \
   -inkey "$KEY" -in "$CRT" \
   -name "$APP_ID" \
   -passin "pass:$KEYSTORE_PASSWORD" \
-  -passout "pass:$KEYSTORE_PASSWORD" \
-  >/dev/null 2>&1
+  -passout "pass:$KEYSTORE_PASSWORD"; then
+  echo "openssl pkcs12 export failed" >&2
+  exit 1
+fi
 
-chmod 600 "$KEY" "$P12"
+chmod 600 "$KEY" "$P12" 2>/dev/null || true
 echo
 echo "Created:"
 echo "  $P12   <- give this to electron-builder as CSC_LINK"
