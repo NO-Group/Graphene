@@ -10,3 +10,9 @@ build/signing/keys/
 *.jks
 *.key
 !build/icons/*.png
+
+# Stray key material from local testing. A literal "D:\a\_temp\..." filename
+# once reached the repo and broke checkout on Windows runners.
+*.crt
+[A-Z]:\\*
+graphene-keys/
