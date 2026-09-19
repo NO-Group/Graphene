@@ -375,6 +375,7 @@ function snapshot() {
   });
 }
 function commit(label) {
+  if (typeof clearSnapCache === "function") clearSnapCache();
   App.history = App.history.slice(0, App.histIndex + 1);
   App.history.push({ label: label || "", data: snapshot() });
   if (App.history.length > App.HIST_MAX) App.history.shift();
@@ -395,8 +396,35 @@ function undo() { if (App.histIndex > 0) { App.histIndex--; restore(App.history[
 function redo() { if (App.histIndex < App.history.length - 1) { App.histIndex++; restore(App.history[App.histIndex]); } }
 
 /* ---------- coordinates ---------- */
+/* Cached stage rect.
+   screenToWorld runs on every pointermove, and getBoundingClientRect forces a
+   synchronous layout each call - it measured ~23 ms on a busy document, which
+   alone put the cursor well below 60 fps. The rect only changes when the window
+   resizes or the page scrolls, so cache it and invalidate on those events. */
+let _stageRect = null;
+function stageRect() {
+  if (_stageRect) return _stageRect;
+  const el = $("#stage");
+  if (!el) return { left: 0, top: 0, width: 0, height: 0 };
+  _stageRect = el.getBoundingClientRect();
+  return _stageRect;
+}
+function invalidateStageRect() { _stageRect = null; }
+
+if (typeof window !== "undefined") {
+  addEventListener("resize", invalidateStageRect, { passive: true });
+  addEventListener("scroll", invalidateStageRect, { passive: true, capture: true });
+  /* Layout can also shift when panels open or the toolbar reflows. */
+  if (typeof ResizeObserver === "function") {
+    addEventListener("DOMContentLoaded", () => {
+      const el = $("#stage");
+      if (el) new ResizeObserver(invalidateStageRect).observe(el);
+    });
+  }
+}
+
 function screenToWorld(sx, sy) {
-  const r = $("#stage").getBoundingClientRect();
+  const r = stageRect();
   return { x: (sx - r.left - App.panX) / App.zoom, y: (sy - r.top - App.panY) / App.zoom };
 }
 function snapVal(v) {

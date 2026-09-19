@@ -16,6 +16,7 @@ DAYS="${DAYS:-3650}"
 CN="${CN:-N-O Group}"
 ORG="${ORG:-N-O Group}"
 COUNTRY="${COUNTRY:-NG}"
+EMAIL="${EMAIL:-n.ogroup@yahoo.com}"
 
 if [ -z "${KEYSTORE_PASSWORD:-}" ]; then
   echo "KEYSTORE_PASSWORD is not set." >&2
@@ -38,11 +39,11 @@ echo "Generating a 4096-bit RSA key for $APP_ID ..."
 openssl req -x509 -newkey rsa:4096 -sha256 -days "$DAYS" \
   -keyout "$KEY" -out "$CRT" \
   -passout "pass:$KEYSTORE_PASSWORD" \
-  -subj "/CN=$CN/O=$ORG/OU=$APP_ID/C=$COUNTRY" \
+  -subj "/CN=$CN/O=$ORG/OU=$APP_ID/C=$COUNTRY/emailAddress=$EMAIL" \
   -addext "basicConstraints=critical,CA:FALSE" \
   -addext "keyUsage=critical,digitalSignature" \
   -addext "extendedKeyUsage=codeSigning" \
-  -addext "subjectAltName=URI:$APP_ID" \
+  -addext "subjectAltName=URI:$APP_ID,email:$EMAIL" \
   >/dev/null 2>&1
 
 echo "Bundling into PKCS#12 ..."

@@ -93,14 +93,49 @@ function hitObject(e) {
   return o && !o.locked ? o : null;
 }
 
-/* ---------- pointer events ---------- */
+/* ---------- pointer events ----------
+   Pointer devices fire far faster than the display refreshes - a 1000 Hz mouse
+   can emit ~16 moves per frame, and each one used to run the full drag handler
+   plus a re-render. Coalescing to one handler call per animation frame keeps
+   the cursor attached to the pointer instead of lagging behind it.
+
+   The latest event always wins, so no motion is lost; only the redundant
+   intermediate redraws are dropped. pointerdown/up stay synchronous because
+   they must not be reordered relative to the frame. */
+let _pendingMove = null;
+let _moveFrame = 0;
+
+function flushPointerMove() {
+  _moveFrame = 0;
+  const e = _pendingMove;
+  _pendingMove = null;
+  if (e) onPointerMove(e);
+}
+
+function queuePointerMove(e) {
+  /* getCoalescedEvents would let us replay sub-frame samples, but for dragging
+     the newest position is the only one that matters. */
+  _pendingMove = e;
+  if (!_moveFrame) _moveFrame = requestAnimationFrame(flushPointerMove);
+}
+
+/* Any pending frame must be applied before the gesture ends, or the final
+   position is silently dropped and the object lands short of the cursor. */
+function flushBeforePointerUp(e) {
+  if (_moveFrame) { cancelAnimationFrame(_moveFrame); flushPointerMove(); }
+  onPointerUp(e);
+}
+
 stage.addEventListener("pointerdown", onPointerDown);
-window.addEventListener("pointermove", onPointerMove);
-window.addEventListener("pointerup", onPointerUp);
+window.addEventListener("pointermove", queuePointerMove, { passive: true });
+window.addEventListener("pointerup", flushBeforePointerUp);
+window.addEventListener("pointercancel", flushBeforePointerUp);
 stage.addEventListener("dblclick", onDblClick);
 stage.addEventListener("wheel", onWheel, { passive: false });
 
 function onPointerDown(e) {
+  clearSnapCache();               // rebuild targets for this gesture
+
   if (e.button === 1 || spacePan || App.tool === "pan") {
     drag = { mode: "pan", sx: e.clientX, sy: e.clientY, px: App.panX, py: App.panY };
     stage.classList.add("panning");
@@ -192,6 +227,7 @@ function onPointerMove(e) {
 }
 
 function onPointerUp(e) {
+  clearSnapCache();                 // positions may have changed
   if (App.tool === "mesh" && typeof meshUp === "function") meshUp();
   if (!drag) return;
   const d = drag; drag = null;
@@ -340,23 +376,47 @@ function moveDrag(e, w) {
     moveObj(cp, dx, dy);
     Object.assign(o, cp);
   });
-  render();
+  /* Only the dragged objects changed, so patch their nodes instead of
+     rebuilding the entire scene each frame. Falls back to a full render if the
+     targeted update cannot be applied. */
+  if (!(typeof renderObjects === "function" && renderObjects(objs))) render();
   drawSmartGuides(smartLines);
   if (typeof drawDimensions === "function") drawDimensions(selectionBBox());
   syncTransformInputs();
 }
 
 /* snap a bbox against other objects' edges/centers, page, and guides */
-function smartSnap(bb, excludeIds) {
-  const T = 6 / App.zoom;       // snap threshold in world units
-  const vTargets = [0, App.doc.w / 2, App.doc.w, ...App.doc.guides.v];
-  const hTargets = [0, App.doc.h / 2, App.doc.h, ...App.doc.guides.h];
+/* Snap targets for the objects that are NOT being dragged.
+
+   These cannot move during a gesture, so recomputing them every frame meant
+   worldBBox ran once per object per pointer move - 45,000 calls over a single
+   30-frame drag on a 1500-object document. The cache is built on the first
+   frame of a gesture and dropped by clearSnapCache() when it ends or the
+   document changes. */
+let _snapCache = null;
+function clearSnapCache() { _snapCache = null; }
+
+function snapTargets(excludeIds) {
+  if (_snapCache && _snapCache.key === App.objects.length &&
+      _snapCache.excl === excludeIds.size && _snapCache.zoom === App.zoom) {
+    return _snapCache;
+  }
+  const v = [], h = [];
   for (const o of App.objects) {
     if (excludeIds.has(o.id) || !o.visible) continue;
     const b = worldBBox(o);
-    vTargets.push(b.x, b.x + b.w / 2, b.x + b.w);
-    hTargets.push(b.y, b.y + b.h / 2, b.y + b.h);
+    v.push(b.x, b.x + b.w / 2, b.x + b.w);
+    h.push(b.y, b.y + b.h / 2, b.y + b.h);
   }
+  _snapCache = { key: App.objects.length, excl: excludeIds.size, zoom: App.zoom, v, h };
+  return _snapCache;
+}
+
+function smartSnap(bb, excludeIds) {
+  const T = 6 / App.zoom;       // snap threshold in world units
+  const cached = snapTargets(excludeIds);
+  const vTargets = [0, App.doc.w / 2, App.doc.w, ...App.doc.guides.v, ...cached.v];
+  const hTargets = [0, App.doc.h / 2, App.doc.h, ...App.doc.guides.h, ...cached.h];
   const vProbes = [bb.x, bb.x + bb.w / 2, bb.x + bb.w];
   const hProbes = [bb.y, bb.y + bb.h / 2, bb.y + bb.h];
 
@@ -431,17 +491,27 @@ function rotateDrag(e, w) {
 function marqueeDrag(e, w) {
   const x = Math.min(drag.start.x, w.x), y = Math.min(drag.start.y, w.y);
   const mw = Math.abs(w.x - drag.start.x), mh = Math.abs(w.y - drag.start.y);
-  drawMarquee(x, y, mw, mh);
-  const hit = App.objects.filter(o => {
-    if (!o.visible || o.locked) return false;
-    const b = worldBBox(o);
-    return b.x < x + mw && b.x + b.w > x && b.y < y + mh && b.y + b.h > y;
-  }).map(o => o.id);
+  /* Nothing moves while a marquee is being dragged, so the candidates' boxes
+     are computed once per gesture instead of once per object per frame. */
+  if (!drag.hitCache) {
+    drag.hitCache = [];
+    for (const o of App.objects) {
+      if (!o.visible || o.locked) continue;
+      drag.hitCache.push({ id: o.id, b: worldBBox(o) });
+    }
+  }
+  const hit = [];
+  for (const c of drag.hitCache) {
+    const b = c.b;
+    if (b.x < x + mw && b.x + b.w > x && b.y < y + mh && b.y + b.h > y) hit.push(c.id);
+  }
   App.selection = drag.add ? [...new Set([...drag.base, ...hit])] : hit;
+  /* renderOverlay() rebuilds the overlay layer and destroys the marquee node,
+     so it must run BEFORE the rectangle is drawn. Drawing first and then
+     re-appending meant drawMarquee ran twice per frame, and the second
+     $("#marquee-rect") lookup had to scan the whole tree again. */
   renderOverlay();
-  // keep marquee on top
-  const m = $("#marquee-rect");
-  if (m) gOverlay.appendChild(m); else drawMarquee(x, y, mw, mh);
+  drawMarquee(x, y, mw, mh);
 }
 
 /* ============================================================

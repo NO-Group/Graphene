@@ -232,6 +232,30 @@ function objTransform(o) {
   return parts.join(" ");
 }
 
+/* Re-render only the given objects, leaving every other node untouched.
+
+   render() clears #objects and rebuilds all N nodes, plus a defs sweep that
+   walks the whole document. During a drag that work is repeated every frame
+   even though only the selected objects moved - it measured ~140 ms per call
+   on 1500 objects, which is what made the cursor lag.
+
+   Returns false when a node cannot be swapped in place (a new object, or a
+   structural change) so the caller can fall back to a full render. */
+function renderObjects(objs) {
+  if (!objs || !objs.length) return true;
+  for (const o of objs) {
+    /* Object nodes carry data-id, not id - an id would collide with the
+       gradient/filter defs keyed on the same object. */
+    const old = gObjects.querySelector(`[data-id="${o.id}"]`);
+    if (!old) return false;                 // not on screen yet: needs a full pass
+    const el = renderObj(o);
+    if (!el) return false;
+    old.replaceWith(el);
+  }
+  renderOverlay();                          // selection handles follow the shapes
+  return true;
+}
+
 /* ---------- full render ---------- */
 function render() {
   gWorld.setAttribute("transform", `translate(${App.panX} ${App.panY}) scale(${App.zoom})`);
