@@ -77,7 +77,8 @@
       "desktop": {
         "Name": "Graphene",
         "Categories": "Graphics;VectorGraphics;Publishing;"
-      }
+      },
+      "maintainer": "N-O Group <dev@n-o-group.com>"
     },
     "productName": "Graphene",
     "executableName": "graphene",
@@ -105,7 +106,8 @@
     "electron-builder": "^24.13.0"
   },
   "author": {
-    "name": "N-O Group"
+    "name": "N-O Group",
+    "email": "dev@n-o-group.com"
   },
   "license": "MIT"
 }
