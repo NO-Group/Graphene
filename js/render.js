@@ -168,6 +168,9 @@ function renderObj(o) {
     default: return null;
   }
   el.dataset.id = o.id;
+  /* drives the cursor affordance in CSS: a locked shape shows not-allowed
+     rather than pretending to be draggable */
+  if (o.locked) el.dataset.locked = "true";
 
   /* Mesh fill: paint a clipped lattice of interpolated quads behind the
      shape's own stroke. Falls back silently if mesh.js is absent. */

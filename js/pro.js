@@ -552,28 +552,54 @@ function checkRecovery() {
 /* ============================================================
    8. DIMENSION READOUT while dragging
    ============================================================ */
-function drawDimensions(bb) {
-  const g = $("#dimension-layer");
-  if (g) g.remove();
-  if (!bb) return;
-  const z = App.zoom;
+/* Live W x H / x,y readout while dragging.
+
+   This runs on every drag frame. It used to destroy and rebuild the whole
+   layer each time and locate it with a document-wide $("#dimension-layer")
+   scan. The structure never changes - two rounded rects and two labels - so
+   the nodes are built once and only their attributes are updated afterwards. */
+let _dimLayer = null;
+function dimLayer() {
+  if (_dimLayer && _dimLayer.isConnected) return _dimLayer;
   const grp = svgEl("g", { id: "dimension-layer", "pointer-events": "none" });
-  const label = (x, y, text) => {
-    const pad = 3 / z;
-    const t = svgEl("text", {
-      x, y, "font-size": 11 / z, "font-family": "ui-monospace, monospace",
-      fill: "#fff", "text-anchor": "middle", "dominant-baseline": "middle"
+  grp._parts = [];
+  for (let i = 0; i < 2; i++) {
+    const rect = svgEl("rect", { fill: "#7C5CFF" });
+    const text = svgEl("text", {
+      "font-family": "ui-monospace, monospace", fill: "#fff",
+      "text-anchor": "middle", "dominant-baseline": "middle",
     });
-    t.textContent = text;
-    const w = (text.length * 6.2 + 8) / z, h = 15 / z;
-    grp.appendChild(svgEl("rect", { x: x - w / 2, y: y - h / 2, width: w, height: h, rx: 3 / z, fill: "#7C5CFF" }));
-    grp.appendChild(t);
-  };
-  label(bb.x + bb.w / 2, bb.y - 14 / z, `${Math.round(bb.w)} × ${Math.round(bb.h)}`);
-  label(bb.x + bb.w / 2, bb.y + bb.h + 14 / z, `x ${Math.round(bb.x)}  y ${Math.round(bb.y)}`);
+    grp.appendChild(rect); grp.appendChild(text);
+    grp._parts.push({ rect, text });
+  }
   gOverlay.appendChild(grp);
+  _dimLayer = grp;
+  return grp;
 }
-function clearDimensions() { const g = $("#dimension-layer"); if (g) g.remove(); }
+
+function drawDimensions(bb) {
+  if (!bb) { clearDimensions(); return; }
+  const z = App.zoom;
+  const grp = dimLayer();
+  if (grp.parentNode !== gOverlay) gOverlay.appendChild(grp);   // keep on top
+  const put = (i, x, y, str) => {
+    const { rect, text } = grp._parts[i];
+    const w = (str.length * 6.2 + 8) / z, h = 15 / z;
+    rect.setAttribute("x", x - w / 2); rect.setAttribute("y", y - h / 2);
+    rect.setAttribute("width", w); rect.setAttribute("height", h);
+    rect.setAttribute("rx", 3 / z);
+    text.setAttribute("x", x); text.setAttribute("y", y);
+    text.setAttribute("font-size", 11 / z);
+    if (text.textContent !== str) text.textContent = str;
+  };
+  put(0, bb.x + bb.w / 2, bb.y - 14 / z, `${Math.round(bb.w)} × ${Math.round(bb.h)}`);
+  put(1, bb.x + bb.w / 2, bb.y + bb.h + 14 / z, `x ${Math.round(bb.x)}  y ${Math.round(bb.y)}`);
+}
+
+function clearDimensions() {
+  if (_dimLayer) { _dimLayer.remove(); _dimLayer = null; return; }
+  const g = $("#dimension-layer"); if (g) g.remove();
+}
 
 /* ============================================================
    9. WIRING

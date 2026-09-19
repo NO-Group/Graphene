@@ -124,6 +124,8 @@ function queuePointerMove(e) {
 function flushBeforePointerUp(e) {
   if (_moveFrame) { cancelAnimationFrame(_moveFrame); flushPointerMove(); }
   onPointerUp(e);
+  /* cursor lock ends with the gesture, whatever the outcome */
+  try { stage.classList.remove("dragging"); } catch (err) {}
 }
 
 stage.addEventListener("pointerdown", onPointerDown);
@@ -135,6 +137,8 @@ stage.addEventListener("wheel", onWheel, { passive: false });
 
 function onPointerDown(e) {
   clearSnapCache();               // rebuild targets for this gesture
+  /* Locked shapes are not draggable; make the pointer say so immediately
+     rather than after a failed drag attempt. */
 
   if (e.button === 1 || spacePan || App.tool === "pan") {
     drag = { mode: "pan", sx: e.clientX, sy: e.clientY, px: App.panX, py: App.panY };
@@ -179,6 +183,13 @@ function onPointerMove(e) {
   if (App.tool === "mesh" && typeof meshMove === "function") { meshMove(w); }
 
   if (!drag) return;
+  /* Lock the cursor for the whole gesture so it does not flicker as the
+     pointer crosses other shapes mid-drag. Set here rather than at each
+     `drag = {...}` site so every mode is covered. */
+  if (!drag._cursorLocked && (drag.mode === "move" || drag.mode === "resize" || drag.mode === "rotate")) {
+    drag._cursorLocked = true;
+    try { stage.classList.add("dragging"); } catch (err) {}
+  }
   switch (drag.mode) {
     case "pan":
       App.panX = drag.px + e.clientX - drag.sx;

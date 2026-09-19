@@ -189,6 +189,66 @@ const frame = () => new Promise(r => setTimeout(r, 0));
     up(200, 200);
   }
 
+  console.log("— cursor affordances —");
+  {
+    const css = require("fs").readFileSync(require("path").join(__dirname, "..", "css", "styles.css"), "utf8");
+    t("objects show a move cursor", /#objects > \*\s*\{\s*cursor:\s*move/.test(css));
+    t("locked objects show not-allowed", /data-locked="true"\]\s*\{\s*cursor:\s*not-allowed/.test(css));
+    t("the cursor is locked during a drag", /#stage\.dragging/.test(css));
+    t("panning shows grabbing", /\.panning[^{]*\{[^}]*grabbing/.test(css));
+  }
+  {
+    scene(4);
+    const locked = App.objects[1];
+    locked.locked = true;
+    g("render")();
+    const a = doc.querySelector(`[data-id="${App.objects[0].id}"]`);
+    const b = doc.querySelector(`[data-id="${locked.id}"]`);
+    t("a normal object is not marked locked", !a.dataset.locked, a.dataset.locked);
+    t("a locked object is marked in the DOM", b.dataset.locked === "true", b.dataset.locked);
+    locked.locked = false;
+  }
+  {
+    /* the drag cursor lock must be applied during, and cleared after */
+    scene(6);
+    const smart = App.smartGuides; App.smartGuides = false;
+    const target = App.objects[0];
+    App.selection = [target.id];
+    g("render")();
+    const el = doc.querySelector(`[data-id="${target.id}"]`);
+    const stageEl = doc.querySelector("#stage");
+    down(el, 20, 20);
+    const mv = win.eval("onPointerMove");
+    mv(new win.PointerEvent("pointermove", { bubbles: true, clientX: 60, clientY: 20 }));
+    t("the stage is marked dragging mid-gesture",
+      (stageEl.getAttribute("class") || "").includes("dragging"), stageEl.getAttribute("class"));
+    up(60, 20);
+    t("  …and the mark is cleared afterwards",
+      !(stageEl.getAttribute("class") || "").includes("dragging"), stageEl.getAttribute("class"));
+    App.smartGuides = smart;
+  }
+
+  console.log("— the dimension readout is reused, not rebuilt —");
+  {
+    scene(8);
+    const smart = App.smartGuides; App.smartGuides = false;
+    const target = App.objects[0];
+    App.selection = [target.id];
+    g("render")();
+    const el = doc.querySelector(`[data-id="${target.id}"]`);
+    down(el, 20, 20);
+    const mv = win.eval("onPointerMove");
+    for (let i = 0; i < 12; i++) mv(new win.PointerEvent("pointermove", { bubbles: true, clientX: 20 + i * 6, clientY: 20 }));
+    const layers = doc.querySelectorAll("#dimension-layer").length;
+    t("exactly one dimension layer exists after 12 frames", layers === 1, layers);
+    const labels = [...doc.querySelectorAll("#dimension-layer text")].map(n => n.textContent);
+    t("  …and it still shows both readouts", labels.length === 2, JSON.stringify(labels));
+    t("  …with live values", /×/.test(labels[0] || "") && /^x /.test(labels[1] || ""), JSON.stringify(labels));
+    up(100, 20);
+    t("the readout is removed when the drag ends", doc.querySelectorAll("#dimension-layer").length === 0);
+    App.smartGuides = smart;
+  }
+
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 })();

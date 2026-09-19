@@ -552,3 +552,27 @@ body.outline-view #objects image { opacity: .25; }
   #splash, .splash-card { transition: none; animation: none; }
   .splash-bar i { animation: none; width: 100%; }
 }
+
+/* ============================================================
+   Cursor affordances on the canvas.
+
+   Tool cursors existed, but with the Select tool the pointer stayed a plain
+   arrow over everything, so nothing signalled which shapes could be grabbed.
+   Done in CSS rather than on pointermove: a JS hover handler would add work to
+   the hottest path in the app for something the compositor does for free.
+   ============================================================ */
+
+/* default over empty canvas: the select tool marquees, so show a crosshair-free
+   arrow; objects below override it */
+#stage:not([class*="tool-"]) #objects > * { cursor: move; }
+
+/* locked objects cannot be dragged - say so instead of lying with `move` */
+#stage #objects > [data-locked="true"] { cursor: not-allowed; }
+
+/* node editing: the anchors are the targets, the path itself is not draggable */
+#stage.tool-node #objects > * { cursor: default; }
+
+/* while a drag is in flight the cursor must not flicker as it crosses other
+   shapes - lock it for the whole gesture */
+#stage.dragging, #stage.dragging * { cursor: move !important; }
+#stage.tool-pan.panning, #stage.tool-pan.panning * { cursor: grabbing !important; }
