@@ -127,12 +127,26 @@ jobs:
             exit 0
           fi
           echo "::notice::CSC_LINK not set - generating a self-signed keystore for this build."
-          export KEYSTORE_PASSWORD="ci-$(openssl rand -hex 16)"
-          OUT_DIR="$RUNNER_TEMP/keys" bash build/signing/make-keystore.sh
-          KEYSTORE_PASSWORD="$KEYSTORE_PASSWORD" bash build/signing/verify-keystore.sh "$RUNNER_TEMP/keys/graphene.p12"
+          if ! command -v openssl >/dev/null 2>&1; then
+            echo "::warning::openssl unavailable - building unsigned."
+            echo "mode=none" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          KEYSTORE_PASSWORD="ci-$(openssl rand -hex 16)"
+          export KEYSTORE_PASSWORD
           echo "::add-mask::$KEYSTORE_PASSWORD"
+          KEYDIR="$RUNNER_TEMP/keys"
+          if ! OUT_DIR="$KEYDIR" bash build/signing/make-keystore.sh; then
+            echo "::warning::keystore generation failed - building unsigned."
+            echo "mode=none" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if ! bash build/signing/verify-keystore.sh "$KEYDIR/graphene.p12"; then
+            echo "::warning::keystore failed verification - building unsigned."
+            echo "mode=none" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # base64 -w0 is GNU-only; node is guaranteed present on every runner
+          B64=$(node -e "process.stdout.write(require('fs').readFileSync(process.argv[1]).toString('base64'))" "$KEYDIR/graphene.p12")
           {
-            echo "CSC_LINK=$(base64 -w0 "$RUNNER_TEMP/keys/graphene.p12")"
+            echo "CSC_LINK=$B64"
             echo "CSC_KEY_PASSWORD=$KEYSTORE_PASSWORD"
           } >> "$GITHUB_ENV"
           echo "mode=generated" >> "$GITHUB_OUTPUT"
