@@ -44,11 +44,19 @@ jobs:
         env:
           CHROME_PATH: /usr/bin/google-chrome
         run: |
-          if [ -x "$CHROME_PATH" ]; then
-            node test/browser.e2e.js
-          else
+          if [ ! -x "$CHROME_PATH" ]; then
             echo "::warning::Chrome not found at $CHROME_PATH - skipping browser E2E"
+            exit 0
           fi
+          set +e
+          node test/browser.e2e.js 2>&1 | tee /tmp/e2e.log
+          code=${PIPESTATUS[0]}
+          if [ $code -ne 0 ]; then
+            grep -aE "FAIL|threw|SKIP" /tmp/e2e.log | head -12 | while IFS= read -r l; do
+              echo "::error::E2E $(printf '%s' "$l" | cut -c1-360)"
+            done
+          fi
+          exit $code
 
       - name: Run the full suite
         run: |
