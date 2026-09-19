@@ -4,7 +4,7 @@ const fs = require("fs");
 const path = require("path");
 const ROOT = path.join(__dirname, "..", "..");
 
-const SCRIPTS = ["js/core.js", "js/render.js", "js/boolean.js", "js/tools.js", "js/ui.js",
+const SCRIPTS = ["js/splash.js", "js/core.js", "js/render.js", "js/boolean.js", "js/tools.js", "js/ui.js",
   "js/extras.js", "js/pro.js", "js/distort.js", "js/trace.js", "js/png.js",
   "js/pdf.js", "js/fountain.js", "js/mesh.js", "js/arrange.js"];
 

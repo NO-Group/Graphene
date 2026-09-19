@@ -31,6 +31,40 @@ function saveState(win) {
 }
 
 let mainWindow = null;
+let splashWindow = null;
+
+/* Frameless branded splash, shown while the editor loads.
+   It is closed from exactly one place (closeSplash) and guarded by a watchdog,
+   so a failure to load index.html can never leave it orphaned on screen. */
+function createSplash() {
+  try {
+    const win = new BrowserWindow({
+      width: 520, height: 300,
+      frame: false, resizable: false, movable: true,
+      center: true, show: false, transparent: true,
+      alwaysOnTop: true, skipTaskbar: true,
+      backgroundColor: "#00000000",
+      webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
+    });
+    win.loadFile(path.join(__dirname, "splash.html"),
+      { search: "v=" + encodeURIComponent(app.getVersion()) });
+    win.once("ready-to-show", () => { if (!win.isDestroyed()) win.show(); });
+    splashWindow = win;
+    /* Hard ceiling: never outlive the main window's load by much. */
+    setTimeout(closeSplash, 10000);
+    return win;
+  } catch (e) {
+    splashWindow = null;                 // splash is optional, never fatal
+    return null;
+  }
+}
+
+function closeSplash() {
+  const w = splashWindow;
+  splashWindow = null;
+  try { if (w && !w.isDestroyed()) w.close(); } catch (e) { /* already gone */ }
+}
+
 
 function createWindow() {
   const st = readState();
@@ -46,12 +80,26 @@ function createWindow() {
       nodeIntegration: false,
       sandbox: true,
       preload: path.join(__dirname, "preload.js"),
+      additionalArguments: ["--app-version=" + app.getVersion()],
       spellcheck: false,
     },
   });
   mainWindow = win;
   if (st.maximized) win.maximize();
-  win.once("ready-to-show", () => win.show());
+  win.once("ready-to-show", () => {
+    closeSplash();                       // retire the splash before revealing
+    win.show();
+    win.focus();
+  });
+  /* If the page fails to load, the splash must still go and the user must be
+     told, rather than being left staring at a branded panel forever. */
+  win.webContents.on("did-fail-load", (_e, code, desc) => {
+    closeSplash();
+    if (!win.isDestroyed()) win.show();
+    dialog.showErrorBox("Graphene could not start",
+      `The editor failed to load (${code}). ${desc || ""}`.trim());
+  });
+  win.webContents.on("render-process-gone", () => closeSplash());
   win.on("close", () => saveState(win));
   win.loadFile(path.join(ROOT, "index.html"));
 
@@ -171,9 +219,11 @@ app.on("second-instance", () => {
 });
 
 app.whenReady().then(() => {
+  createSplash();                        // branded panel first
   createWindow();
   buildMenu();
   app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });
 
+app.on("before-quit", () => closeSplash());
 app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });

@@ -11,6 +11,53 @@
 </head>
 <body>
 
+<!-- ===== Splash / launch screen =====================================
+     Inlined immediately after <body> and styled from css/styles.css so it
+     paints on the first frame, before any module has parsed. Removed by
+     js/splash.js once the app signals it is ready. -->
+<div id="splash" role="status" aria-live="polite" aria-label="Graphene is starting">
+  <div class="splash-veil"></div>
+  <div class="splash-card">
+    <!-- folded-corner ribbon, drawn as SVG so it scales cleanly -->
+    <svg class="splash-fold" viewBox="0 0 520 300" aria-hidden="true" preserveAspectRatio="none">
+      <defs>
+        <linearGradient id="sp-sheet" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stop-color="#7C5CFF"/>
+          <stop offset="0.55" stop-color="#5B6BFF"/>
+          <stop offset="1" stop-color="#39D2C0"/>
+        </linearGradient>
+        <linearGradient id="sp-curl" x1="1" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#ffffff" stop-opacity="0.95"/>
+          <stop offset="1" stop-color="#cfd6ff" stop-opacity="0.55"/>
+        </linearGradient>
+      </defs>
+      <rect width="520" height="300" fill="url(#sp-sheet)"/>
+      <path d="M520 0 L520 196 Q392 150 348 0 Z" fill="url(#sp-curl)" opacity="0.9"/>
+      <path d="M520 0 L348 0 Q392 150 520 196 Z" fill="#ffffff" opacity="0.14"/>
+    </svg>
+
+    <div class="splash-body">
+      <div class="splash-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><defs><linearGradient id="sp-logo" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#d7f5ef"/>
+        </linearGradient></defs>
+        <path fill="url(#sp-logo)" d="M12 2l9 5v10l-9 5-9-5V7z"/>
+        <path fill="#16171c" opacity="0.34" d="M12 2v20l-9-5V7z"/></svg>
+      </div>
+      <div class="splash-word">
+        <h1>Graphene</h1>
+        <p id="splash-status">Vector Design Studio</p>
+      </div>
+    </div>
+
+    <div class="splash-foot">
+      <span id="splash-ver">7.0.0</span>
+      <span class="splash-bar" aria-hidden="true"><i></i></span>
+    </div>
+  </div>
+</div>
+
+
 <header id="topbar">
   <div id="logo"><svg viewBox="0 0 24 24" width="22" height="22"><defs><linearGradient id="logo-g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#7C5CFF"/><stop offset="1" stop-color="#39D2C0"/></linearGradient></defs><path fill="url(#logo-g)" d="M12 2l9 5v10l-9 5-9-5V7z"/></svg><span>Graphene</span></div>
 
@@ -623,6 +670,7 @@
   </div>
 </div>
 
+<script src="js/splash.js"></script>
 <script src="js/core.js"></script>
 <script src="js/render.js"></script>
 <script src="js/boolean.js"></script>
@@ -638,6 +686,11 @@
 <script src="js/fountain.js"></script>
 <script src="js/mesh.js"></script>
 <script>
+/* Everything has parsed and the first render has run: retire the splash.
+   Wrapped so a missing splash.js can never stop the service worker from
+   registering, and vice versa. */
+try { if (typeof splashReady === "function") splashReady(); } catch (e) {}
+
 if ("serviceWorker" in navigator && location.protocol !== "file:") {
   navigator.serviceWorker.register("sw.js").catch(() => {});
 }
