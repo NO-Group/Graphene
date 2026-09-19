@@ -184,6 +184,66 @@ function findBrowser() {
     });
     t("PDF export succeeds in-browser", pdfOK === true, pdfOK);
 
+    console.log("— panels and controls respond to real clicks —");
+    {
+      /* jsdom cannot tell whether a control is visible or reachable; a real
+         browser can, via elementFromPoint at the control's own centre. */
+      const reachable = await page.evaluate(() => {
+        const out = [];
+        for (const sel of ["#toolbar [data-tool='rect']", "#palette .swatch", "[data-cmd='undo']"]) {
+          const el = document.querySelector(sel);
+          if (!el) { out.push([sel, "missing"]); continue; }
+          const r = el.getBoundingClientRect();
+          if (r.width === 0 || r.height === 0) { out.push([sel, "zero-size"]); continue; }
+          const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+          out.push([sel, el.contains(hit) || el === hit ? "ok" : "covered"]);
+        }
+        return out;
+      });
+      for (const [sel, status] of reachable) {
+        t(`${sel} is clickable`, status === "ok", status);
+      }
+    }
+    {
+      /* a real click on a tool button must change the active tool */
+      await page.click("#toolbar [data-tool='ellipse']");
+      const tool = await page.evaluate(() => App.tool);
+      t("clicking a tool button switches tools", tool === "ellipse", tool);
+      await page.click("#toolbar [data-tool='select']");
+    }
+    {
+      /* the swatch click path: select a shape, click a colour, check the fill */
+      const applied = await page.evaluate(() => {
+        App.objects = []; App.selection = [];
+        const r = makeRect(80, 80, 120, 90);
+        App.objects.push(r); App.selection = [r.id];
+        render(); updateUI();
+        return r.fill.color;
+      });
+      await page.click("#palette .swatch");
+      const after = await page.evaluate(() => App.objects[0].fill.color);
+      t("clicking a swatch changes the fill", after !== applied, `${applied} -> ${after}`);
+    }
+
+    console.log("— the cursor actually changes over a shape —");
+    {
+      const cur = await page.evaluate(() => {
+        const o = App.objects[App.objects.length - 1];
+        const el = document.querySelector(`[data-id="${o.id}"]`);
+        return el ? getComputedStyle(el).cursor : "no-node";
+      });
+      t("an object shows the move cursor", cur === "move", cur);
+      const lockedCur = await page.evaluate(() => {
+        const o = App.objects[App.objects.length - 1];
+        o.locked = true; render();
+        const el = document.querySelector(`[data-id="${o.id}"]`);
+        const c = el ? getComputedStyle(el).cursor : "no-node";
+        o.locked = false; render();
+        return c;
+      });
+      t("a locked object shows not-allowed", lockedCur === "not-allowed", lockedCur);
+    }
+
     console.log("— undo/redo through real keystrokes —");
     const n1 = await page.evaluate(() => App.objects.length);
     await page.keyboard.down("Control"); await page.keyboard.press("KeyZ"); await page.keyboard.up("Control");

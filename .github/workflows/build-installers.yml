@@ -150,6 +150,11 @@ jobs:
             echo "CSC_KEY_PASSWORD=$KEYSTORE_PASSWORD"
           } >> "$GITHUB_ENV"
           echo "mode=generated" >> "$GITHUB_OUTPUT"
+          # Publish the fingerprint so a download can be checked against the
+          # signature that actually produced it.
+          FP=$(openssl x509 -in "$KEYDIR/graphene.crt" -noout -fingerprint -sha256 | cut -d= -f2)
+          echo "::notice::SIGNING-CERT sha256 $FP"
+          cp "$KEYDIR/graphene.crt" "$RUNNER_TEMP/graphene-signing-cert.crt"
 
       - name: Verify build inputs
         shell: bash
@@ -245,6 +250,7 @@ jobs:
           retention-days: 30
           if-no-files-found: error
           path: |
+            ${{ runner.temp }}/graphene-signing-cert.crt
             dist/*.exe
             dist/*.AppImage
             dist/*.deb
