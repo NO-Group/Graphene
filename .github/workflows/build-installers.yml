@@ -137,6 +137,14 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           echo "---- tail of electron-builder output ----"
           tail -n 60 /tmp/eb.log 2>/dev/null || true
+          # Annotations are readable through the API even when log blobs are
+          # not, so emit the meaningful lines as individual notices.
+          grep -aE "⨯|Error|error|cannot|Cannot|ENOENT|not found|failed" /tmp/eb.log 2>/dev/null \
+            | head -12 \
+            | while IFS= read -r line; do
+                clean=$(printf '%s' "$line" | tr -d '\r' | cut -c1-380)
+                echo "::error::EB ${clean}"
+              done || true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Both are empty when the secrets are absent, which electron-builder
